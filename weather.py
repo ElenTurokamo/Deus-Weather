@@ -1,6 +1,10 @@
 import requests
 from data import WEATHER_API_KEY
 
+def format_weather(city_name, temp, description):
+    """Формирует сообщение о погоде в требуемом формате."""
+    return f"Погода в г.{city_name}: {description}.\nТемпература: {temp}°C"
+
 def get_weather(city):
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
 
@@ -15,4 +19,4 @@ def get_weather(city):
     description = response_data["weather"][0]["description"]
     city_name = response_data["name"]
 
-    return f"Погода в г.{city_name}: {temp}°C, {description}"
+    return format_weather(city_name, temp, description)
