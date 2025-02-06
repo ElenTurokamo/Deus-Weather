@@ -2,7 +2,6 @@ import requests
 from data import WEATHER_API_KEY
 
 def format_weather(city_name, temp, description):
-    """Формирует сообщение о погоде в требуемом формате."""
     return f"Погода в г.{city_name}: {description}.\nТемпература: {temp}°C"
 
 def get_weather(city):
