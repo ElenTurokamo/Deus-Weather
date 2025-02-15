@@ -54,3 +54,7 @@ class CheckedCities(Base):
     last_temperature = Column(Float, nullable=True)
     last_wind_speed = Column(Float, nullable=True)
     last_humidity = Column(Integer, nullable=True)
+
+    pressure = Column(Integer, nullable=True) 
+    visibility = Column(Integer, nullable=True) 
+    description = Column(String(255), nullable=True)

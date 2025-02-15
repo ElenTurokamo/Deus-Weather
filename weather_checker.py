@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 from models import CheckedCities, User
 from functools import wraps
 import threading
+import random
+
+TEST = False #тестовый режим для проверки уведомлений (True - вкл, False - выкл.)
+test_weather_data = None
 
 load_dotenv()
 
@@ -22,7 +26,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("logs/weather_checker.log", encoding="utf-8"),
-        logging.StreamHandler()
+        logging.StreamHandler()                                                                                                                                 
     ]
 )
 
@@ -48,6 +52,21 @@ def safeexecute(func):
 
 @safeexecute
 def get_weather_data(city):
+    global test_weather_data
+
+    if TEST:
+        if test_weather_data is None:
+            logging.warning("🧪 ТЕСТОВЫЙ РЕЖИМ АКТИВИРОВАН! Используем случайные данные для всех городов.")
+            test_weather_data = {
+                "temperature": round(random.uniform(-30, 40), 1),
+                "humidity": random.randint(10, 100),
+                "wind_speed": round(random.uniform(0, 25), 1),
+                "description": random.choice(["ясно", "облачно", "дождь", "снег", "гроза"]),
+                "pressure": random.randint(950, 1050),
+                "visibility": random.randint(100, 10000)
+            }
+        return test_weather_data 
+
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={os.getenv('WEATHER_API_KEY')}&units=metric&lang=ru"
     try:
         response = requests.get(url, timeout=10)
@@ -60,9 +79,9 @@ def get_weather_data(city):
         logging.error(f"⚠ Ошибка в ответе API для {city}: {resp_data}")
         return None
     return {
-        "temperature": resp_data["main"]["temp"],
-        "humidity": resp_data["main"]["humidity"],
-        "wind_speed": resp_data["wind"]["speed"],
+        "temperature": round(resp_data["main"]["temp"], 1),
+        "humidity": round(resp_data["main"]["humidity"]),
+        "wind_speed": round(resp_data["wind"]["speed"], 1),
         "description": resp_data["weather"][0]["description"],
         "pressure": round(resp_data["main"]["pressure"] * 0.75006),
         "visibility": resp_data.get("visibility", "Неизвестно")
@@ -93,6 +112,13 @@ def check_weather_changes_for_city(city):
         session.close()
         return
     
+    def format_change(label, old_value, new_value, unit=""):
+        if old_value is None or old_value != new_value:
+            arrow = "📈" if new_value > old_value else "📉"
+            return f"**{label}: {new_value}{unit} {arrow}**"
+        return f"{label}: {new_value}{unit}"
+
+    
     now = datetime.utcnow()
     city_record = session.query(CheckedCities).filter_by(city_name=city).first()
     
@@ -109,8 +135,14 @@ def check_weather_changes_for_city(city):
         temp_diff = abs(current_data["temperature"] - city_record.temperature)
         humidity_diff = abs(current_data["humidity"] - (city_record.last_humidity or 0))
         wind_diff = abs(current_data["wind_speed"] - (city_record.last_wind_speed or 0))
-
-        logging.info(f"🌡 {city} | ΔT: {temp_diff}°C | 💧 ΔH: {humidity_diff}% | 💨 ΔW: {wind_diff} м/с")
+        pressure_diff = abs(current_data["pressure"] - (city_record.pressure or 0))
+        visibility_diff = abs(current_data["visibility"] - (city_record.visibility or 0))
+        logging.info(f"🌡 {city} | Температура: {city_record.temperature}°C → {current_data['temperature']}°C (ΔT: {temp_diff}°C)")
+        logging.info(f"🌥 {city} | Погода: {city_record.description} → {current_data['description']}")
+        logging.info(f"💧 {city} | Влажность: {city_record.last_humidity}% → {current_data['humidity']}% (ΔH: {humidity_diff}%)")
+        logging.info(f"💨 {city} | Ветер: {city_record.last_wind_speed} м/с → {current_data['wind_speed']} м/с (ΔW: {wind_diff} м/с)")
+        logging.info(f"📊 {city} | Давление: {city_record.pressure} мм → {current_data['pressure']} мм (ΔP: {pressure_diff} мм)")
+        logging.info(f"👀 {city} | Видимость: {city_record.visibility} м → {current_data['visibility']} м (ΔV: {visibility_diff} м)")
 
         if temp_diff >= 5 or humidity_diff >= 15 or wind_diff > 2:
             significant_change = True
@@ -118,15 +150,18 @@ def check_weather_changes_for_city(city):
         significant_change = False
 
     if significant_change:
-        alert_message = (f"🔔 Внимание! Погода в городе {city} изменилась!\n"
-                         f"\n"
-                         f"▸ Температура: {current_data['temperature']}°C, {current_data['description']}\n"
-                         f"▸ Влажность: {current_data['humidity']}%\n"
-                         f"▸ Скорость ветра: {current_data['wind_speed']} м/с")
+        alert_message = (f"🔔 *Внимание! Погода в г.{city} изменилась!*\n"
+                 f"\n"
+                 f"▸ Погода: *{current_data['description'].capitalize()}*\n"
+                 f"{format_change('▸ Температура', city_record.temperature, current_data['temperature'], '°C')}\n"
+                 f"{format_change('▸ Влажность', city_record.last_humidity, current_data['humidity'], '%')}\n"
+                 f"{format_change('▸ Скорость ветра', city_record.last_wind_speed, current_data['wind_speed'], ' м/с')}\n"
+                 f"{format_change('▸ Давление', city_record.pressure, current_data['pressure'], ' мм')}\n"
+                 f"{format_change('▸ Видимость', city_record.visibility, current_data['visibility'], ' м')}")
         users = session.query(User).filter(User.preferred_city == city, User.notifications_enabled == True).all()
         for user in users:
             try: 
-                bot.send_message(user.user_id, alert_message)
+                bot.send_message(user.user_id, alert_message, parse_mode="Markdown")
                 logging.info(f"📩 Уведомление отправлено: {user.user_id} ({city})")
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки уведомления {user.user_id}: {e}")
@@ -136,7 +171,11 @@ def check_weather_changes_for_city(city):
         city_record.last_wind_speed = current_data["wind_speed"]
         city_record.temperature = current_data["temperature"]
         city_record.weather_info = json.dumps(current_data, ensure_ascii=False)
+        city_record.pressure = current_data["pressure"]
+        city_record.visibility = current_data["visibility"]
+        city_record.description = current_data["description"]
         city_record.last_checked = now
+
     else:
         new_record = CheckedCities(
             city_name=city,
@@ -177,4 +216,8 @@ if __name__ == '__main__':
         except Exception as e:
             logging.critical(f"🔥 Критическая ошибка в основном цикле: {e}")
             notify_admin(f"Чекер упал! Ошибка: {e}") 
-        time.sleep(900)
+        now = datetime.utcnow()
+        next_run = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        sleep_time = max(0, (next_run - now).total_seconds())
+        logging.info(f"🕒 Следующая проверка через {round(sleep_time)} секунд ({next_run})")
+        time.sleep(sleep_time)
