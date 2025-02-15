@@ -1,5 +1,0 @@
-BOT_TOKEN = ""
-WEATHER_API_KEY = ""
-DB_HOST = ""
-DB_USER = ""
-DB_PASSWORD = ""
