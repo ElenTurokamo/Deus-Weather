@@ -151,6 +151,7 @@ def weather(message):
         logging.debug(f"У пользователя с ID {user_id} не выбран город. Запрашиваем город.")
         reply = bot.reply_to(message, "Для начала — укажите свой город!")
         bot.register_next_step_handler(reply, process_new_city)
+        return
     else:
         city = user.preferred_city
         logging.debug(f"Пользователь с ID {user_id} имеет сохранённый город: '{city}'.")
