@@ -9,10 +9,12 @@ from models import User, Base
 import re
 import os
 from dotenv import load_dotenv
+import requests
+import time
 
 load_dotenv()
+bot_start_time = time.time()
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -90,27 +92,35 @@ def send_settings_menu(chat_id):
     bot.delete_message(chat_id, loading_message.message_id)
     bot.send_message(chat_id, "Выберите настройку:", reply_markup=settings_keyboard)
 
+@bot.message_handler(func=lambda message: message.date < bot_start_time)
+def ignore_old_messages(message):
+    logging.debug(f"Игнорируем старое сообщение от {message.from_user.id}, отправленное до запуска бота.")
+    return
+
+pending_city_users = {}  
+awaiting_city_users = set() 
+
 @safe_execute
 @bot.message_handler(commands=['start'])
 def start(message):
     log_action("Получена команда /start", message)
     user_id = message.from_user.id
     user = get_user(user_id)
-    
-    if user:
+
+    if user and user.preferred_city:
         reply_text = (f"С возвращением, {message.from_user.first_name}!\n"
-                      f"Ваш основной город — {user.preferred_city or 'не указан.'}.")
+                      f"Ваш основной город — {user.preferred_city}.")
         bot.reply_to(message, reply_text)
-        logging.debug(f"Пользователь с ID {user_id} уже зарегистрирован. Приветственное сообщение обновлено.")
+        logging.debug(f"Пользователь с ID {user_id} уже зарегистрирован.")
+        send_main_menu(message.chat.id)
+
     else:
         save_user(user_id, message.from_user.first_name)
         reply_text = (f"Привет, {message.from_user.first_name}!\n"
                       "Для того, чтобы начать получать информацию о погоде — укажите свой город.")
         msg = bot.reply_to(message, reply_text)
         bot.register_next_step_handler(msg, lambda m: process_new_city(m))
-        logging.debug(f"Новый пользователь с ID {user_id} зарегистрирован. Запрошен город.")
-    
-    send_main_menu(message.chat.id)
+        logging.debug(f"Новый пользователь {user_id}. Запрошен город.")
 
 @safe_execute
 @bot.message_handler(commands=['weather'])
@@ -160,7 +170,7 @@ def notifications_settings(message):
         status_message = (f"Настройки уведомлений.\n"
                           f"\n"
                           f"Уведомления: {current_status}.\n"
-                          "Хотите ли вы получать уведомления о погоде?")
+                          f"Хотите ли вы получать уведомления, при изменении погоды в г.{user.preferred_city}?")
     else:
         status_message = "Вы не зарегистрированы. Пожалуйста, начните с команды /start."
     
@@ -230,36 +240,51 @@ def help_command(message):
 def process_new_city(message, show_menu=False):
     user_id = message.from_user.id
     city = message.text.strip()
-    
+
+    if city == "/start":
+        start(message)
+        return
+
     if city.startswith("/") or not city:
         reply = bot.reply_to(message, "Отправьте название города, а не команду!")
-        logging.debug(f"Пользователь {user_id} ввёл некорректную команду или пустой город.")
         bot.register_next_step_handler(reply, lambda m: process_new_city(m, show_menu))
         return
-    
+
     if not re.match(r'^[A-Za-zА-Яа-яЁё\s\-]+$', city):
         reply = bot.reply_to(message, "Название города может содержать только буквы, пробелы и дефисы!")
-        logging.debug(f"Пользователь {user_id} ввёл недопустимые символы в названии города: {city}")
         bot.register_next_step_handler(reply, lambda m: process_new_city(m, show_menu))
         return
-    
+
     user = get_user(user_id)
     if user:
         if user.preferred_city == city:
-            reply = bot.reply_to(message, f"Теперь ваш основной город - это {city}!")
-            logging.debug(f"Пользователь {user_id} уже указал город: {city}")
+            bot.reply_to(message, f"Теперь ваш основной город - это {city}!")
         else:
             save_user(user_id, preferred_city=city)
-            reply = bot.reply_to(message, f"Данные обновлены!\nТеперь ваш основной город — {city}.")
-            logging.debug(f"Город для пользователя {user_id} был успешно обновлён на {city}")
+            bot.reply_to(message, f"Данные обновлены!\nТеперь ваш основной город — {city}.")
     else:
         save_user(user_id, username=message.from_user.username, preferred_city=city)
-        reply = bot.reply_to(message, f"Данные сохранены!\nТеперь ваш основной город — {city}.")
-        logging.debug(f"Новый пользователь {user_id} указал город: {city}")
-    
-    if show_menu:
-        send_main_menu(message.chat.id)
+        bot.reply_to(message, f"Данные сохранены!\nТеперь ваш основной город — {city}.")
+
+    send_main_menu(message.chat.id)
 
 if __name__ == '__main__':
     logging.debug("Бот запущен.")
-    bot.polling(none_stop=True)
+
+    attempt = 1 
+    while True:
+        try:
+            logging.debug(f"Попытка #{attempt}: Запускаем polling...")
+            bot.polling(none_stop=True, timeout=10, long_polling_timeout=10)
+        except requests.exceptions.ReadTimeout:
+            logging.error(f"Попытка #{attempt}: Время ожидания ответа от Telegram API истекло (Read timeout).")
+        except requests.exceptions.ConnectionError as e:
+            if "NameResolutionError" in str(e):
+                logging.error(f"Попытка #{attempt}: Не удалось разрешить адрес 'api.telegram.org' (Name resolution failed).")
+            else:
+                logging.error(f"Попытка #{attempt}: Ошибка соединения с Telegram API: {e}")
+        except Exception as e:
+            logging.error(f"Попытка #{attempt}: Неизвестная ошибка в polling: {e}")
+        finally:
+            attempt += 1
+            time.sleep(5)

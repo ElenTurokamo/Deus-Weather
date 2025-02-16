@@ -144,7 +144,7 @@ def check_weather_changes_for_city(city):
         logging.info(f"📊 {city} | Давление: {city_record.pressure} мм → {current_data['pressure']} мм (ΔP: {pressure_diff} мм)")
         logging.info(f"👀 {city} | Видимость: {city_record.visibility} м → {current_data['visibility']} м (ΔV: {visibility_diff} м)")
 
-        if temp_diff >= 5 or humidity_diff >= 15 or wind_diff > 2:
+        if temp_diff >= 3 or humidity_diff >= 10 or wind_diff > 2:
             significant_change = True
     else:
         significant_change = False
