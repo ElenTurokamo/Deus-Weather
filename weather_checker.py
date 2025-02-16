@@ -188,15 +188,37 @@ def check_weather_changes_for_city(city):
         session.add(new_record)
     session.commit()
     session.close()
+    return True
 
 @safeexecute
 def check_all_cities():
     session = Session()
     cities = session.query(User.preferred_city).filter(User.notifications_enabled == True).distinct().all()
     session.close()
-    for (city,) in cities:
-        if city:
-            check_weather_changes_for_city(city)
+
+    cities = {city[0] for city in cities if city[0]}  # Убираем пустые значения
+    checked_cities = set()  # Храним успешно проверенные города
+
+    attempt = 1
+    max_attempts = 3  # Количество повторных проверок, если остались непройденные города
+
+    while cities - checked_cities and attempt <= max_attempts:
+        remaining_cities = cities - checked_cities  # Города, которые еще не проверены
+
+        logging.info(f"🔄 Попытка #{attempt}: Проверяем {len(remaining_cities)} оставшихся городов...")
+
+        for city in remaining_cities:
+            success = check_weather_changes_for_city(city)  # Проверяем город
+
+            if success:
+                checked_cities.add(city)  # Если проверка успешна, добавляем в список проверенных
+                logging.info(f"✅ {city} добавлен в проверенные города.")
+
+        attempt += 1  # Переходим к следующей попытке, если не все города проверены
+
+    # Если после всех попыток остались непроверенные города, логируем ошибку
+    if cities - checked_cities:
+        logging.warning(f"⚠️ Остались непроверенные города: {cities - checked_cities}")
 
 @safeexecute
 def notify_admin(message):

@@ -1,6 +1,7 @@
 import telebot
 from telebot import types
 from weather import get_weather
+from weather import get_weekly_forecast, get_today_forecast
 import logging
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -79,7 +80,8 @@ def update_conversation(user_id):
 
 def send_main_menu(chat_id):
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    main_keyboard.row("🌦 Узнать погоду", "⚙️ Настройки")
+    main_keyboard.row("🌦 Узнать погоду", "📅 Прогноз погоды")
+    main_keyboard.row("⚙️ Настройки")
     loading_message = bot.send_message(chat_id, "Загрузка...")
     bot.delete_message(chat_id, loading_message.message_id)
     bot.send_message(chat_id, "Выберите опцию:", reply_markup=main_keyboard)
@@ -91,6 +93,23 @@ def send_settings_menu(chat_id):
     loading_message = bot.send_message(chat_id, "Загрузка...")
     bot.delete_message(chat_id, loading_message.message_id)
     bot.send_message(chat_id, "Выберите настройку:", reply_markup=settings_keyboard)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["forecast_today", "forecast_week", "back_to_main"])
+def forecast_handler(call):
+    chat_id = call.message.chat.id
+    user = get_user(call.from_user.id)
+
+    if call.data == "forecast_today":
+        forecast = get_today_forecast(user.preferred_city)
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=f"🌤 *Прогноз погоды на сегодня:*\n{forecast}", parse_mode="Markdown")
+    
+    elif call.data == "forecast_week":
+        forecast = get_weekly_forecast(user.preferred_city)
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=forecast, parse_mode="Markdown")
+    
+    elif call.data == "back_to_main":
+        bot.delete_message(chat_id, call.message.message_id) 
+        send_main_menu(chat_id)
 
 @bot.message_handler(func=lambda message: message.date < bot_start_time)
 def ignore_old_messages(message):
@@ -267,6 +286,17 @@ def process_new_city(message, show_menu=False):
         bot.reply_to(message, f"Данные сохранены!\nТеперь ваш основной город — {city}.")
 
     send_main_menu(message.chat.id)
+
+@safe_execute
+@bot.message_handler(func=lambda message: message.text == "📅 Прогноз погоды")
+def forecast_menu(message):
+    chat_id = message.chat.id
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
+    keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
+    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_main"))
+    
+    bot.send_message(chat_id, "Выберите период прогноза:", reply_markup=keyboard)
 
 if __name__ == '__main__':
     logging.debug("Бот запущен.")
