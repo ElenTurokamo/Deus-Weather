@@ -76,7 +76,7 @@ def get_weather_data(city):
         return None
     resp_data = response.json()
     if resp_data.get("cod") != 200:
-        logging.error(f"⚠ Ошибка в ответе API для {city}: {resp_data}")
+        logging.error(f"Ошибка в ответе API для {city}: {resp_data}")
         return None
     return {
         "temperature": round(resp_data["main"]["temp"], 1),
@@ -137,12 +137,12 @@ def check_weather_changes_for_city(city):
         wind_diff = abs(current_data["wind_speed"] - (city_record.last_wind_speed or 0))
         pressure_diff = abs(current_data["pressure"] - (city_record.pressure or 0))
         visibility_diff = abs(current_data["visibility"] - (city_record.visibility or 0))
-        logging.info(f"🌡 {city} | Температура: {city_record.temperature}°C → {current_data['temperature']}°C (ΔT: {temp_diff}°C)")
-        logging.info(f"🌥 {city} | Погода: {city_record.description} → {current_data['description']}")
-        logging.info(f"💧 {city} | Влажность: {city_record.last_humidity}% → {current_data['humidity']}% (ΔH: {humidity_diff}%)")
-        logging.info(f"💨 {city} | Ветер: {city_record.last_wind_speed} м/с → {current_data['wind_speed']} м/с (ΔW: {wind_diff} м/с)")
-        logging.info(f"📊 {city} | Давление: {city_record.pressure} мм → {current_data['pressure']} мм (ΔP: {pressure_diff} мм)")
-        logging.info(f"👀 {city} | Видимость: {city_record.visibility} м → {current_data['visibility']} м (ΔV: {visibility_diff} м)")
+        logging.info(f"{city} | Температура: {city_record.temperature}°C → {current_data['temperature']}°C (ΔT: {temp_diff}°C)")
+        logging.info(f"{city} | Погода: {city_record.description} → {current_data['description']}")
+        logging.info(f"{city} | Влажность: {city_record.last_humidity}% → {current_data['humidity']}% (ΔH: {humidity_diff}%)")
+        logging.info(f"{city} | Ветер: {city_record.last_wind_speed} м/с → {current_data['wind_speed']} м/с (ΔW: {wind_diff} м/с)")
+        logging.info(f"{city} | Давление: {city_record.pressure} мм → {current_data['pressure']} мм (ΔP: {pressure_diff} мм)")
+        logging.info(f"{city} | Видимость: {city_record.visibility} м → {current_data['visibility']} м (ΔV: {visibility_diff} м)")
 
         if temp_diff >= 3 or humidity_diff >= 10 or wind_diff > 2:
             significant_change = True
@@ -162,7 +162,7 @@ def check_weather_changes_for_city(city):
         for user in users:
             try: 
                 bot.send_message(user.user_id, alert_message, parse_mode="Markdown")
-                logging.info(f"📩 Уведомление отправлено: {user.user_id} ({city})")
+                logging.info(f"📩 Уведомление отправлено: {user.user_id} ({city})\n")
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки уведомления {user.user_id}: {e}")
 
@@ -211,12 +211,11 @@ def check_all_cities():
             success = check_weather_changes_for_city(city)  # Проверяем город
 
             if success:
-                checked_cities.add(city)  # Если проверка успешна, добавляем в список проверенных
+                checked_cities.add(city)  
                 logging.info(f"✅ {city} добавлен в проверенные города.")
 
-        attempt += 1  # Переходим к следующей попытке, если не все города проверены
+        attempt += 1  
 
-    # Если после всех попыток остались непроверенные города, логируем ошибку
     if cities - checked_cities:
         logging.warning(f"⚠️ Остались непроверенные города: {cities - checked_cities}")
 

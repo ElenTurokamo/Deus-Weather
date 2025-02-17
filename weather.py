@@ -1,8 +1,14 @@
 import requests
 import os
 from dotenv import load_dotenv
+import datetime
 
 load_dotenv()
+
+MONTHS_RU = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
+    7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+}
 
 def format_weather(city_name, temp, description, humidity, wind_speed, pressure, visibility):
     return (f"Сейчас в г.{city_name}:\n"
@@ -34,6 +40,14 @@ def get_weather(city):
 
     return format_weather(city_name, temp, description, humidity, wind_speed, pressure, visibility)
 
+import datetime
+
+MONTHS_RU = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
+    7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+}
+
+#Прогноз погоды на неделю
 def get_weekly_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
     url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
@@ -45,32 +59,54 @@ def get_weekly_forecast(city):
         return None
 
     daily_data = {}
+    today = datetime.date.today()
+    start_date = today + datetime.timedelta(days=1)  
+
     for entry in response_data["list"]:
-        date = entry["dt_txt"].split(" ")[0]  
-        temp_min = entry["main"]["temp_min"]
-        temp_max = entry["main"]["temp_max"]
+        date_str = entry["dt_txt"].split(" ")[0]  
+        date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        
+        if date_obj < start_date: 
+            continue
+        if (date_obj - start_date).days >= 5: 
+            break
+
+        temp = entry["main"]["temp"]  
         description = entry["weather"][0]["description"].capitalize()
-        pop = entry.get("pop", 0) * 100  
+        pop = entry.get("pop")  
 
-        if date not in daily_data:
-            daily_data[date] = {"temp_min": temp_min, "temp_max": temp_max, "description": description, "pop": pop}
-        else:
-            daily_data[date]["temp_min"] = min(daily_data[date]["temp_min"], temp_min)
-            daily_data[date]["temp_max"] = max(daily_data[date]["temp_max"], temp_max)
-            daily_data[date]["pop"] = max(daily_data[date]["pop"], pop)
+        if date_obj not in daily_data:
+            daily_data[date_obj] = {
+                "temp_min": temp,
+                "temp_max": temp,
+                "description": description,
+                "pop_values": [] 
+            }
 
-    forecast_text = "📆 *Прогноз погоды на неделю:*\n\n"
+        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], temp)
+        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj]["temp_max"], temp)
+        
+        if pop is not None: 
+            daily_data[date_obj]["pop_values"].append(pop * 100) 
+
+    forecast_text = "📆 *Прогноз погоды на 5 дней:*\n\n"
     days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 
-    for i, (date, data) in enumerate(daily_data.items()):
-        forecast_text += (f"✦ *{days[i % 7]}*\n"
+    for date, data in sorted(daily_data.items()):
+        day_name = days[date.weekday()]
+        month_name = MONTHS_RU[date.month]
+
+        avg_pop = round(sum(data["pop_values"]) / len(data["pop_values"])) if data["pop_values"] else 0
+
+        forecast_text += (f"✦ *{day_name}, {date.day} {month_name}*\n"
                           f"▸ Погода: {data['description']}\n"
-                          f"▸ Осадки: {round(data['pop'])}%\n"
-                          f"▸ Температура: от {round(temp_min)}°C до {round(temp_max)}°C\n"
+                          f"▸ Осадки: {avg_pop}%\n"
+                          f"▸ Температура: от {round(data['temp_min'])}°C до {round(data['temp_max'])}°C\n"
                           f"\n")
 
     return forecast_text
 
+#Прогноз погоды на сегодня
 def get_today_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
     url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
@@ -81,15 +117,23 @@ def get_today_forecast(city):
     if response_data.get("cod") != "200":
         return None
 
-    today = response_data["list"][0]  
-    temp_min = today["main"]["temp_min"]
-    temp_max = today["main"]["temp_max"]
-    description = today["weather"][0]["description"].capitalize()
-    pop = today.get("pop", 0) * 100 
+    today_date = datetime.date.today()
+    month_name = MONTHS_RU[today_date.month]
 
-    forecast_text = (f"\n"
-                 f"▸ Погода: {description}\n"
-                 f"▸ Осадки: {round(pop)}%\n"
-                 f"▸ Температура: от {round(temp_min)}°C до {round(temp_max)}°C\n")
+    today_forecast_list = [entry for entry in response_data["list"] if today_date.strftime("%Y-%m-%d") in entry["dt_txt"]]
+
+    if not today_forecast_list:
+        return "Прогноз на сегодня недоступен."
+
+    temp_min = min(entry["main"]["temp"] for entry in today_forecast_list)
+    temp_max = max(entry["main"]["temp"] for entry in today_forecast_list)
+    description = today_forecast_list[0]["weather"][0]["description"].capitalize()
+    avg_pop = round(sum(entry.get("pop", 0) * 100 for entry in today_forecast_list) / len(today_forecast_list))
+
+    forecast_text = (f"🌤 *Сегодня, {today_date.day} {month_name}*\n"
+                     f"\n"
+                     f"▸ Погода: {description}\n"
+                     f"▸ Осадки: {avg_pop}%\n"
+                     f"▸ Температура: от {round(temp_min)}°C до {round(temp_max)}°C\n")
 
     return forecast_text

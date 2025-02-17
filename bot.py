@@ -101,7 +101,7 @@ def forecast_handler(call):
 
     if call.data == "forecast_today":
         forecast = get_today_forecast(user.preferred_city)
-        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=f"🌤 *Прогноз погоды на сегодня:*\n{forecast}", parse_mode="Markdown")
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=f"{forecast}", parse_mode="Markdown")
     
     elif call.data == "forecast_week":
         forecast = get_weekly_forecast(user.preferred_city)
