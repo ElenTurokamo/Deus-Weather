@@ -19,9 +19,11 @@ def get_user(user_id):
     """Возвращает пользователя, но не оставляет сессию открытой."""
     db = SessionLocal()
     user = db.query(User).filter(User.user_id == user_id).first()
+
+    logging.debug(f"Вызов get_user() с user_id={user_id} (Тип: {type(user_id)}) - {'Найден' if user else 'Не найден'}")
+
     db.close()
     return user
-
 active_sessions = {}
 
 #СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЯ
@@ -44,6 +46,7 @@ def save_user(user_id, username=None, preferred_city=None):
 
 #ИЗМЕНЕНИЕ ЕДИНИЦ ИЗМЕРЕНИЯ
 def update_user_unit(user_id, unit_type, new_value):
+    logging.debug(f"update_user_unit вызван с user_id={user_id}, unit_type={unit_type}, new_value={new_value}")
     db = SessionLocal()
     user = db.query(User).filter(User.user_id == user_id).first()
 
@@ -55,8 +58,9 @@ def update_user_unit(user_id, unit_type, new_value):
         elif unit_type == "wind_speed":
             user.wind_speed_unit = new_value
         db.commit()
-
-    db.close()
+        db.close()  # Закрываем сессию сразу после изменений
+    else:
+        db.close()  # Чтобы не было утечек, закрываем и если user=None
 
 #ОТОБРАЖЕНИЕ УВЕДОМЛЕНИЙ
 def toggle_user_notifications(user_id, new_status):

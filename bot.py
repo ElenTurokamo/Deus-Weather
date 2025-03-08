@@ -420,53 +420,66 @@ def toggle_notifications(call):
 
 """ОТКРЫТИЕ МЕНЮ ЕДИНИЦ ИЗМЕРЕНИЯ ДАННЫХ"""
 @safe_execute
-@bot.message_handler(func=lambda message: message.text == "📏 Единицы измерения")
-def format_settings(message):
-    """Обработчик настроек единиц измерения через текстовую команду"""
-    chat_id = message.chat.id
-    user_id = message.from_user.id
+def format_settings(param, reply_to=None):
+    """
+    Редактирует сообщение меню единиц измерения.
+    Если param – это объект сообщения, то используется его chat.id и message_id для reply_to.
+    Если передан chat_id (int), то пытаемся взять reply_to из last_menu_message.
+    """
+    if isinstance(param, int):
+        chat_id = param
+        # Если reply_to не передали, попробуем взять его из last_menu_message
+        if reply_to is None:
+            reply_to = last_menu_message.get(chat_id)
+    else:
+        chat_id = param.chat.id
+        if reply_to is None:
+            reply_to = param.message_id
 
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
-        except Exception as e:
-            logging.warning(f"Ошибка при удалении старого сообщения: {e}")
-
-    user = get_user(user_id)
+    logging.debug(f"format_settings вызван с chat_id={chat_id}, reply_to={reply_to}")
+    
+    user = get_user(chat_id)
     if not user:
-        bot.reply_to(message, "Ошибка: пользователь не найден. Попробуйте /start.")
+        logging.error(f"Ошибка: пользователь {chat_id} не найден в format_settings()")
+        bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
         return
 
-    text = (f"Сейчас ваши значения отображаются так:\n\n"
-            f"▸ Температура: {user.temp_unit}\n"
-            f"▸ Давление: {user.pressure_unit}\n"
-            f"▸ Скорость ветра: {user.wind_speed_unit}\n\n"
-            f"Выберите параметр для изменения:")
+    text = (
+        f"Сейчас ваши значения отображаются так:\n\n"
+        f"▸ Температура: {user.temp_unit}\n"
+        f"▸ Давление: {user.pressure_unit}\n"
+        f"▸ Скорость ветра: {user.wind_speed_unit}\n\n"
+        f"Выберите параметр для изменения:"
+    )
 
-    # Бот теперь отвечает на сообщение пользователя
-    bot.reply_to(message, text, reply_markup=generate_format_keyboard())
+    try:
+        bot.edit_message_text(text, chat_id, reply_to, reply_markup=generate_format_keyboard())
+        # Обновляем last_menu_message, чтобы сохранить id отредактированного сообщения
+        last_menu_message[chat_id] = reply_to
+    except Exception as e:
+        logging.warning(f"Не удалось отредактировать сообщение: {e}")
+        new_msg = bot.send_message(chat_id, text, reply_to_message_id=reply_to, reply_markup=generate_format_keyboard())
+        last_menu_message[chat_id] = new_msg.message_id
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "format_settings")
 def format_settings_callback(call):
     """Обработчик кнопки 'Сохранить', возвращает в меню формата данных"""
     chat_id = call.message.chat.id
-
-    # Удаляем старое меню, если оно есть
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
-        except Exception as e:
-            logging.warning(f"Ошибка при удалении старого меню: {e}")
-
-    format_settings(call.message) 
+    format_settings(call.message)
 
 @safe_execute
 def feature_in_development(message):
     """Временный обработчик для уведомления о разработке"""
     chat_id = message.chat.id
+
+    if chat_id in last_menu_message:
+        try:
+            bot.delete_message(chat_id, last_menu_message[chat_id])
+            del last_menu_message[chat_id] 
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении старого сообщения: {e}")
+
     feature_name = "профиля" if message.text == "🎭 Профиль" else "друзей"
     bot.reply_to(message, f"‼️ Функция {feature_name} всё ещё в разработке!\n\nСледите за обновлениями!")
     send_main_menu(chat_id)
@@ -532,31 +545,67 @@ def process_new_city(message, show_menu=False):
     if show_menu:
         send_settings_menu(message.chat.id)
 
-"""ОТКРЫТИЕ МЕНЮ ИЗМЕНЕНИЯ ФОРМАТА ЕДИНИЦ ИЗМЕРЕНИЯ"""
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["change_temp_unit", "change_pressure_unit", "change_wind_speed_unit"])
 def change_unit_menu(call):
     chat_id = call.message.chat.id
     user = get_user(call.from_user.id)
 
-    unit_type = call.data.split("_")[-2]
+    unit_type = call.data[len("change_"):-len("_unit")]
+    display_names = {
+         "temp": "температуры",
+         "pressure": "давления",
+         "wind_speed": "скорости ветра"
+    }
+    display_text = display_names.get(unit_type, unit_type)
+
     current_unit = getattr(user, f"{unit_type}_unit", "N/A")
 
-    bot.edit_message_text(f"Выберите единицу измерения {unit_type}:", 
+    bot.edit_message_text(f"Выберите единицу измерения {display_text}:", 
                           chat_id, call.message.message_id, 
                           reply_markup=generate_unit_selection_keyboard(current_unit, unit_type))
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
 def set_unit(call):
-    """Изменяет единицы измерения и возвращает пользователя в меню формата данных"""
-    user_id = call.from_user.id 
+    """Изменяет единицы измерения и обновляет inline-клавиатуру, оставаясь в меню до нажатия 'Сохранить'."""
+@safe_execute
+@bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
+def set_unit(call):
+    """Изменяет единицы измерения и обновляет inline-клавиатуру, оставаясь в меню до нажатия 'Сохранить'."""
+    user_id = call.from_user.id
     chat_id = call.message.chat.id
 
-    _, unit_type, _, new_unit = call.data.split("_") 
-    update_user_unit(user_id, unit_type, new_unit)
+    # Убираем префикс "set_"
+    data = call.data[len("set_"):]  # например, для wind_speed: "wind_speed_unit_m/s"
+    try:
+        # Разбиваем по разделителю "_unit_"
+        unit_type, new_unit = data.split("_unit_", 1)
+    except Exception as e:
+        logging.error(f"Ошибка при разборе callback_data: {call.data}, {e}")
+        return
 
-    format_settings(call.message) 
+    logging.debug(f"set_unit: call.from_user.id={user_id}, data={call.data}, unit_type={unit_type}, new_unit={new_unit}")
+
+    user = get_user(user_id)
+    if not user:
+        logging.error(f"Ошибка: пользователь {user_id} не найден в set_unit().")
+        bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
+        return
+
+    update_user_unit(user_id, unit_type, new_unit)
+    logging.debug(f"Единицы {unit_type} изменены на {new_unit} для user_id={user_id}")
+
+    # Обновляем клавиатуру с галочкой у выбранной опции
+    user = get_user(user_id)
+    new_keyboard = generate_unit_selection_keyboard(getattr(user, f"{unit_type}_unit"), unit_type)
+
+    try:
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_keyboard)
+    except Exception as e:
+        logging.error(f"Ошибка при редактировании клавиатуры: {e}")
+
 
 #ПРОПУСК СТАРЫХ СООБЩЕНИЙ
 def clear_old_updates():
