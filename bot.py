@@ -144,19 +144,19 @@ def forecast_handler(call):
         f"📆 *{day['date']}, {day['day_name']}*\n\n"
         f"▸ Погода: {day['description']}\n"
         f"▸ Осадки: {day['precipitation']}%\n"
-        f"▸ Температура: от {round(day['temp_min'])}°{user.temp_unit} "
-        f"до {round(day['temp_max'])}°{user.temp_unit}\n"
-        f"▸ Давление: {round(day['pressure'])} {user.pressure_unit}\n"
-        f"▸ Скорость ветра: {round(day['wind_speed'])} {user.wind_speed_unit}\n"
+        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
+        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+        f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
+        f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
         for day in forecast_data
     ]) if call.data == "forecast_today" else "\n".join([
         f"✦ *{day['date']}, {day['day_name']}*\n"
         f"▸ Погода: {day['description']}\n"
         f"▸ Осадки: {day['precipitation']}%\n"
-        f"▸ Температура: от {round(day['temp_min'])}°{user.temp_unit} "
-        f"до {round(day['temp_max'])}°{user.temp_unit}\n"
-        f"▸ Давление: {round(day['pressure'])} {user.pressure_unit}\n"
-        f"▸ Ветер: {round(day['wind_speed'])} {user.wind_speed_unit}\n"
+        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
+        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+        f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
+        f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
         for day in forecast_data
     ])
 
@@ -271,16 +271,7 @@ def weather(message):
         return
     
 
-    weather_info = format_weather(
-        weather_data["city_name"],
-        weather_data["temp"],
-        weather_data["description"],
-        weather_data["humidity"],
-        weather_data["wind_speed"],
-        weather_data["pressure"],
-        weather_data["visibility"],
-        user.temp_unit, user.pressure_unit, user.wind_speed_unit
-    )
+    weather_info = format_weather_data(weather_data, user)
 
     bot.reply_to(message, weather_info)
     send_main_menu(message.chat.id)
@@ -428,15 +419,16 @@ def format_settings(param, reply_to=None):
     """
     if isinstance(param, int):
         chat_id = param
-        # Если reply_to не передали, попробуем взять его из last_menu_message
-        if reply_to is None:
-            reply_to = last_menu_message.get(chat_id)
-    else:
+    else: 
         chat_id = param.chat.id
-        if reply_to is None:
-            reply_to = param.message_id
+        reply_to = param.message_id if reply_to is None else reply_to
 
-    logging.debug(f"format_settings вызван с chat_id={chat_id}, reply_to={reply_to}")
+    if chat_id in last_menu_message:
+        try:
+            bot.delete_message(chat_id, last_menu_message[chat_id])
+            del last_menu_message[chat_id] 
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении старого сообщения: {e}")
     
     user = get_user(chat_id)
     if not user:
@@ -446,15 +438,14 @@ def format_settings(param, reply_to=None):
 
     text = (
         f"Сейчас ваши значения отображаются так:\n\n"
-        f"▸ Температура: {user.temp_unit}\n"
-        f"▸ Давление: {user.pressure_unit}\n"
-        f"▸ Скорость ветра: {user.wind_speed_unit}\n\n"
+        f"▸ Температура: {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+        f"▸ Давление: {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
+        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n\n"
         f"Выберите параметр для изменения:"
     )
 
     try:
         bot.edit_message_text(text, chat_id, reply_to, reply_markup=generate_format_keyboard())
-        # Обновляем last_menu_message, чтобы сохранить id отредактированного сообщения
         last_menu_message[chat_id] = reply_to
     except Exception as e:
         logging.warning(f"Не удалось отредактировать сообщение: {e}")
@@ -498,7 +489,7 @@ menu_actions = {
     "🏙 Изменить город": changecity,
     "🔔 Уведомления": notifications_settings,
     "↩ Назад": lambda msg: send_main_menu(msg.chat.id),
-    "📏 Единицы измерения": format_settings
+    "📏 Единицы измерения": lambda msg: format_settings(msg)
 }
 
 @safe_execute
@@ -570,10 +561,6 @@ def change_unit_menu(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
 def set_unit(call):
     """Изменяет единицы измерения и обновляет inline-клавиатуру, оставаясь в меню до нажатия 'Сохранить'."""
-@safe_execute
-@bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
-def set_unit(call):
-    """Изменяет единицы измерения и обновляет inline-клавиатуру, оставаясь в меню до нажатия 'Сохранить'."""
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
@@ -601,7 +588,7 @@ def set_unit(call):
     user = get_user(user_id)
     new_keyboard = generate_unit_selection_keyboard(getattr(user, f"{unit_type}_unit"), unit_type)
 
-    try:
+    try:    
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_keyboard)
     except Exception as e:
         logging.error(f"Ошибка при редактировании клавиатуры: {e}")

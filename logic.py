@@ -9,6 +9,28 @@ import os
 import logging
 import importlib
 
+#СЛОВАРИ
+UNIT_TRANSLATIONS = {
+    "temp": {"C": "°C", "F": "°F", "K": "К"},
+    "pressure": {"mmHg": "мм рт. ст.", "mbar": "мбар", "hPa": "гПа", "inHg": "дюйм. рт. ст."},
+    "wind_speed": {"m/s": "м/с", "km/h": "км/ч", "mph": "миль/ч"}
+}
+
+MONTHS_RU = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
+    7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+}
+
+WEEKDAYS_RU = {
+    "Monday": "Понедельник",
+    "Tuesday": "Вторник",
+    "Wednesday": "Среда",
+    "Thursday": "Четверг",
+    "Friday": "Пятница",
+    "Saturday": "Суббота",
+    "Sunday": "Воскресенье",
+}
+
 #ВЗАИМОДЕЙСТВИЕ С БД
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL, echo=False)
@@ -95,6 +117,7 @@ def update_user_city(user_id, city, username=None):
 
 #КОНВЕРТАЦИЯ ЕДИНИЦ ИЗМЕРЕНИЯ
 def convert_temperature(value, unit):
+    logging.debug(f"Converting {value} to {unit}")
     if unit == "C":
         return value
     elif unit == "F":
@@ -103,10 +126,12 @@ def convert_temperature(value, unit):
         return value + 273.15
 
 def convert_pressure(value, unit):
+    logging.debug(f"Converting {value} to {unit}")
     conversions = {"mmHg": 1, "mbar": 1.333, "hPa": 1.333, "inHg": 0.03937}
     return value * conversions[unit]
 
 def convert_wind_speed(value, unit):
+    logging.debug(f"Converting {value} to {unit}")
     conversions = {"m/s": 1, "km/h": 3.6, "mph": 2.23694}
     return value * conversions[unit]
 
@@ -141,22 +166,6 @@ def log_action(action, message):
     logging.debug(log_message)
 
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
-
-MONTHS_RU = {
-    1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
-    7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
-}
-
-WEEKDAYS_RU = {
-    "Monday": "Понедельник",
-    "Tuesday": "Вторник",
-    "Wednesday": "Среда",
-    "Thursday": "Четверг",
-    "Friday": "Пятница",
-    "Saturday": "Суббота",
-    "Sunday": "Воскресенье",
-}
-
 
 """НА СЕГОДНЯ"""
 def get_today_forecast(city):
@@ -244,8 +253,8 @@ def generate_format_keyboard():
 def generate_unit_selection_keyboard(current_value, unit_type):
     unit_options = {
         "temp": [("°C (Цельсий)", "C"), ("°F (Фаренгейт)", "F"), ("K (Кельвин)", "K")],
-        "pressure": [("mmHg", "mmHg"), ("mbar", "mbar"), ("hPa", "hPa"), ("inHg", "inHg")],
-        "wind_speed": [("м/с", "m/s"), ("км/ч", "km/h"), ("mph", "mph")]
+        "pressure": [("мм рт. ст.", "mmHg"), ("мбар", "mbar"), ("гПа", "hPa"), ("дюйм. рт. ст.", "inHg")],
+        "wind_speed": [("м/с", "m/s"), ("км/ч", "km/h"), ("миль/ч", "mph")]
     }
 
     keyboard = types.InlineKeyboardMarkup()
@@ -256,28 +265,25 @@ def generate_unit_selection_keyboard(current_value, unit_type):
     keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="format_settings"))
     return keyboard
 
-#ФОРМАТИРОВАНИЕ ПОГОДЫ
-def format_weather(city_name, temp, description, humidity, wind_speed, pressure, visibility, 
-                   temp_unit, pressure_unit, wind_speed_unit):
-    return (f"Текущая погода в г.{city_name}:\n"
-            f"\n"
-            f"▸ Погода: {description}\n"
-            f"▸ Температура: {temp:.1f}°{temp_unit}\n"
-            f"▸ Влажность: {humidity}%\n"
-            f"▸ Скорость ветра: {wind_speed:.1f} {wind_speed_unit}\n"
-            f"▸ Давление: {pressure:.1f} {pressure_unit}\n"
-            f"▸ Видимость: {visibility} м\n\n"
-            f"      ⟪ Deus Weather ⟫")
-
 #ФОРМАТИРОВАНИЕ ЕДИНИЦ ИЗМЕРЕНИЕ
 def format_weather_data(data, user):
+    logging.debug(f"Конвертация: {data['temp']}° -> {convert_temperature(data['temp'], user.temp_unit)} {user.temp_unit}")
+    logging.debug(f"Конвертация: {data['pressure']} -> {convert_pressure(data['pressure'], user.pressure_unit)} {user.pressure_unit}")
+    logging.debug(f"Конвертация: {data['wind_speed']} -> {convert_wind_speed(data['wind_speed'], user.wind_speed_unit)} {user.wind_speed_unit}")
+
     temperature = convert_temperature(data["temp"], user.temp_unit)
     pressure = convert_pressure(data["pressure"], user.pressure_unit)
     wind_speed = convert_wind_speed(data["wind_speed"], user.wind_speed_unit)
 
-    return (f"🌡 Температура: {temperature:.1f} {user.temp_unit}\n"
-            f"🧭 Давление: {pressure:.1f} {user.pressure_unit}\n"
-            f"💨 Ветер: {wind_speed:.1f} {user.wind_speed_unit}")
+    return (f"Текущая погода в г.{data['city_name']}:\n"
+            f"\n"
+            f"▸ Погода: {data['description']}\n"
+            f"▸ Температура: {temperature:.1f}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+            f"▸ Влажность: {data['humidity']}%\n"
+            f"▸ Давление: {pressure:.1f} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
+            f"▸ Скорость ветра: {wind_speed:.1f} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
+            f"▸ Видимость: {data['visibility']} м\n\n"
+            f"      ⟪ Deus Weather ⟫")
 
 #КОНВЕРТАЦИЯ ОСАДКОВ В %
 def convert_precipitation_to_percent(precipitation_mm):
