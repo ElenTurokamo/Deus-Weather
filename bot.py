@@ -46,15 +46,32 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 #СЛОВАРИ
 last_menu_message = {}
+last_user_command = {}
 conversation_id = {}
+last_bot_message = {}
 
-#УДАЛЕНИЕ МЕНЮ ПРОГНОЗА
-def delete_forecast_menu(chat_id, menu_message_id):
-    """Удаляет сообщение с forecast_menu, если оно есть."""
-    try:
-        bot.delete_message(chat_id, menu_message_id)
-    except Exception as e:
-        logging.warning(f"Ошибка при удалении forecast_menu: {e}")
+def delete_duplicate_command(message):
+    """Удаляет предыдущее сообщение пользователя, если оно шло сразу перед командой
+       или если после него было только сообщение от бота."""
+    chat_id = message.chat.id
+    command = message.text 
+
+    if chat_id in last_user_command:
+        last_message_id = last_user_command[chat_id]["message_id"]
+
+        bot_message_id = last_bot_message.get(chat_id)
+
+        if last_message_id == message.message_id - 1 or (bot_message_id and bot_message_id == message.message_id - 1):
+            try:
+                bot.delete_message(chat_id, last_message_id)
+            except Exception as e:
+                logging.warning(f"Не удалось удалить старую команду: {e}")
+
+    last_user_command[chat_id] = {"command": command, "message_id": message.message_id}
+
+def track_bot_message(message):
+    """Запоминает последнее отправленное сообщение от бота."""
+    last_bot_message[message.chat.id] = message.message_id
 
 #ОБРАБОТЧИКИ
 @bot.message_handler(func=lambda message: not message.text.startswith("/") and message.text not in menu_actions)
@@ -141,29 +158,32 @@ def forecast_handler(call):
         return
 
     forecast_text = "\n".join([
-        f"📆 *{day['date']}, {day['day_name']}*\n\n"
+        f"*{day['date']}, {day['day_name']}*\n\n"
         f"▸ Погода: {day['description']}\n"
         f"▸ Осадки: {day['precipitation']}%\n"
-        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
-        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
+        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
         f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
         f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
         for day in forecast_data
-    ]) if call.data == "forecast_today" else "\n".join([
+    ]) + "\n      ⟪ Deus Weather ⟫" if call.data == "forecast_today" else "\n".join([
         f"✦ *{day['date']}, {day['day_name']}*\n"
         f"▸ Погода: {day['description']}\n"
         f"▸ Осадки: {day['precipitation']}%\n"
-        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
-        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))} {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
+        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
         f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
         f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
         for day in forecast_data
-    ])
+    ]) + "\n      ⟪ Deus Weather ⟫"
 
-    bot.delete_message(chat_id, call.message.message_id)
+    try:
+        bot.edit_message_text(forecast_text, chat_id, menu_message_id, parse_mode="Markdown")
+    except Exception as e:
+        logging.warning(f"Не удалось отредактировать сообщение: {e}")
+        bot.send_message(chat_id, forecast_text, parse_mode="Markdown")
 
-    bot.send_message(chat_id, forecast_text, parse_mode="Markdown")
-    send_main_menu(chat_id)
+    send_main_menu(chat_id) 
 
 
 #НАВИГАЦИОННЫЕ ОБРАБОТЧИКИ
@@ -181,11 +201,13 @@ def back_to_settings_callback(call):
             logging.warning(f"Ошибка при удалении сообщения: {e}")
 
     send_settings_menu(chat_id)
+    
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "⚙️ Настройки")
 def settings_menu_handler(message):
     """Обработчик вызова меню настроек через сообщение"""
+    delete_duplicate_command(message)
     chat_id = message.chat.id
 
     if chat_id in last_menu_message:
@@ -197,6 +219,7 @@ def settings_menu_handler(message):
 
     send_settings_menu(chat_id)
 
+
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
 def back_to_main_callback(call):
@@ -204,15 +227,13 @@ def back_to_main_callback(call):
     chat_id = call.message.chat.id
     bot.delete_message(chat_id, call.message.message_id)
 
-    # Удаляем "Выберите настройку", если оно осталось
     if chat_id in last_menu_message:
         try:
             bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]  # Чистим ID из словаря
+            del last_menu_message[chat_id] 
         except Exception as e:
             logging.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
 
-    # Теперь отправляем главное меню
     send_main_menu(chat_id)
 
 #КОМАНДЫ
@@ -237,12 +258,13 @@ def start(message):
         msg = bot.reply_to(message, new_reply_text)
         bot.register_next_step_handler(msg, lambda m: process_new_city(m, show_menu=True)) 
         logging.debug(f"Новый пользователь {user_id}. Запрошен город.")
-    
+
 
 @safe_execute
 @bot.message_handler(commands=['weather'])
 def weather(message):
     """Отправка текущей погоды в городе пользователя"""
+    delete_duplicate_command(message)
     user_id = message.from_user.id
     user = get_user(user_id)
     logging.debug(f"Получена команда /weather от {user_id}.")
@@ -276,9 +298,11 @@ def weather(message):
     bot.reply_to(message, weather_info)
     send_main_menu(message.chat.id)
 
+
 @safe_execute
 @bot.message_handler(regexp=r"^(\/changecity|🏙 Изменить город)$")
 def changecity(message):
+    delete_duplicate_command(message)
     log_action("Получена команда /changecity", message)
     user_id = message.from_user.id
     user = get_user(user_id)
@@ -305,6 +329,7 @@ def changecity(message):
 
     bot.register_next_step_handler(reply, process_new_city, show_menu=True)
 
+
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_changecity")
 def cancel_changecity_callback(call):
@@ -318,6 +343,7 @@ def cancel_changecity_callback(call):
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "🔔 Уведомления")
 def notifications_settings(message):
+    delete_duplicate_command(message)
     log_action("Пользователь открыл настройки уведомлений", message)
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -354,14 +380,38 @@ def notifications_settings(message):
 @bot.message_handler(regexp=r"^(\📅 Прогноз погоды|/weatherforecast)$")
 def forecast_menu(message):
     """Выводит клавиатуру с выбором прогноза и передаёт ID сообщения дальше."""
+    delete_duplicate_command(message)
     if message.chat.id in last_menu_message:
         try:
             bot.delete_message(message.chat.id, last_menu_message[message.chat.id])
         except Exception as e:
             logging.warning(f"Не удалось удалить сообщение: {e}")
 
-    msg = bot.send_message(message.chat.id, "Выберите период прогноза:", reply_markup=generate_forecast_keyboard())
+    msg = bot.reply_to(message, "Выберите период прогноза:", reply_markup=generate_forecast_keyboard())
+
     return msg.message_id
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_forecast_menu")
+def back_to_forecast_menu(call):
+    """Обработчик кнопки 'Назад' в меню прогноза"""
+    chat_id = call.message.chat.id
+
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception as e:
+        logging.warning(f"Ошибка при удалении меню прогнозов: {e}")
+
+    logging.debug(f"Последняя команда перед удалением: {last_user_command.get(chat_id)}")
+
+    if chat_id in last_user_command:
+        last_command = last_user_command[chat_id]["command"]
+        if last_command == "📅 Прогноз погоды": 
+            try:
+                bot.delete_message(chat_id, last_user_command[chat_id]["message_id"])
+                del last_user_command[chat_id]
+            except Exception as e:
+                logging.warning(f"Ошибка при удалении команды '📅 Прогноз погоды': {e}")
+    send_main_menu(chat_id)
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["enable_notifications", "disable_notifications"])
@@ -408,15 +458,12 @@ def toggle_notifications(call):
                             f"• Предупреждения о резких изменениях погоды в вашем городе.\n"
                             f"• Сообщения о статусе работы бота (например, технические работы).\n\n",
                          reply_markup=keyboard)
+                         
 
 """ОТКРЫТИЕ МЕНЮ ЕДИНИЦ ИЗМЕРЕНИЯ ДАННЫХ"""
 @safe_execute
 def format_settings(param, reply_to=None):
-    """
-    Редактирует сообщение меню единиц измерения.
-    Если param – это объект сообщения, то используется его chat.id и message_id для reply_to.
-    Если передан chat_id (int), то пытаемся взять reply_to из last_menu_message.
-    """
+    """Редактирует сообщение меню единиц измерения."""
     if isinstance(param, int):
         chat_id = param
     else: 
@@ -449,8 +496,8 @@ def format_settings(param, reply_to=None):
         last_menu_message[chat_id] = reply_to
     except Exception as e:
         logging.warning(f"Не удалось отредактировать сообщение: {e}")
-        new_msg = bot.send_message(chat_id, text, reply_to_message_id=reply_to, reply_markup=generate_format_keyboard())
-        last_menu_message[chat_id] = new_msg.message_id
+        msg = bot.send_message(chat_id, text, reply_markup=generate_format_keyboard())
+        last_menu_message[chat_id] = msg.message_id
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "format_settings")
@@ -462,6 +509,7 @@ def format_settings_callback(call):
 @safe_execute
 def feature_in_development(message):
     """Временный обработчик для уведомления о разработке"""
+    delete_duplicate_command(message)
     chat_id = message.chat.id
 
     if chat_id in last_menu_message:
@@ -476,6 +524,25 @@ def feature_in_development(message):
     send_main_menu(chat_id)
 
 @safe_execute
+@bot.message_handler(func=lambda message: message.text == "↩ Назад")
+def settings_back_to_main_menu(message):
+    """Обработчик кнопки '↩ Назад' в главном меню"""
+    chat_id = message.chat.id
+
+    if chat_id in last_menu_message:
+        try:
+            bot.delete_message(chat_id, last_menu_message[chat_id])
+            del last_menu_message[chat_id] 
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении старого сообщения: {e}")
+    send_main_menu(chat_id)
+
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception as e:
+        logging.warning(f"Ошибка при удалении сообщения '↩ Назад': {e}")
+
+@safe_execute
 @bot.message_handler(func=lambda message: message.text in menu_actions)
 def menu_handler(message):
     menu_actions[message.text](message)
@@ -488,7 +555,7 @@ menu_actions = {
     "🎭 Профиль": feature_in_development,
     "🏙 Изменить город": changecity,
     "🔔 Уведомления": notifications_settings,
-    "↩ Назад": lambda msg: send_main_menu(msg.chat.id),
+    "↩ Назад": settings_back_to_main_menu,
     "📏 Единицы измерения": lambda msg: format_settings(msg)
 }
 

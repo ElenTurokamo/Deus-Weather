@@ -237,7 +237,7 @@ def generate_forecast_keyboard():
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
     keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_main"))
+    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_forecast_menu"))
     return keyboard
 
 """ВЫБОР ДАННЫХ"""
