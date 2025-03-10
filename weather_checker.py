@@ -1,3 +1,8 @@
+import glob
+
+from logic import Session, safe_execute, format_weather_data
+from weather import get_weather
+
 import requests
 import json
 import time
@@ -16,42 +21,48 @@ import random
 TEST = False #тестовый режим для проверки уведомлений (True - вкл, False - выкл.)
 test_weather_data = None
 
+#ШИФРОВАНИЕ
 load_dotenv()
 
-if not os.path.exists("logs"):
-    os.makedirs("logs")
+#ЛОГИРОВАНИЕ
+LOG_DIR = "logs"
+LOG_LIFETIME_DAYS = 7  
+
+def clean_old_logs():
+    """Удаляет логи, старше LOG_LIFETIME_DAYS"""
+    now = time.time()
+    for log_file in glob.glob(os.path.join(LOG_DIR, "*.log")):
+        if os.path.isfile(log_file):
+            file_time = os.path.getmtime(log_file)
+            if now - file_time > LOG_LIFETIME_DAYS * 86400:
+                try:
+                    os.remove(log_file)
+                    logging.info(f"🗑 Удалён старый лог: {log_file}")
+                except Exception as e:
+                    logging.warning(f"⚠ Ошибка при удалении {log_file}: {e}")
+
+clean_old_logs()
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("logs/weather_checker.log", encoding="utf-8"),
-        logging.StreamHandler()                                                                                                                                 
+        logging.FileHandler("logs/weather_checker.log", encoding="utf-8"), 
+        logging.StreamHandler()  
     ]
 )
 
-logging.info("🚀 Чекер запущен и логируется в logs/weather_checker.log")
+error_handler = logging.FileHandler("logs/errors.log", encoding="utf-8")
+error_handler.setLevel(logging.ERROR)
+logging.getLogger().addHandler(error_handler)
 
-last_log_time = time.time()
-
-DB_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DB_URL, echo=False)
-Session = sessionmaker(bind=engine)
-
+#ПОЛУЧЕНИЕ ТОКЕНА БОТА
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 
-def safeexecute(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            logging.critical(f"🔥 Ошибка в функции {func.__name__}: {e}")
-            return None
-    return wrapper
-
-@safeexecute
-def get_weather_data(city):
+#ПОЛУЧЕНИЕ ДАННЫХ ИЗ API
+@safe_execute
+def get_weather_data(city, user):
+    """Получает и форматирует данные о погоде, используя API или тестовые значения."""
     global test_weather_data
 
     if TEST:
@@ -65,45 +76,32 @@ def get_weather_data(city):
                 "pressure": random.randint(950, 1050),
                 "visibility": random.randint(100, 10000)
             }
-        return test_weather_data 
+        return test_weather_data  
 
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={os.getenv('WEATHER_API_KEY')}&units=metric&lang=ru"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        logging.error(f"❌ Ошибка получения данных о погоде для {city}: {e}")
+    weather_data = get_weather(city)
+    if not weather_data:
+        logging.error(f"❌ Ошибка получения данных о погоде для {city}")
         return None
-    resp_data = response.json()
-    if resp_data.get("cod") != 200:
-        logging.error(f"Ошибка в ответе API для {city}: {resp_data}")
-        return None
-    return {
-        "temperature": round(resp_data["main"]["temp"], 1),
-        "humidity": round(resp_data["main"]["humidity"]),
-        "wind_speed": round(resp_data["wind"]["speed"], 1),
-        "description": resp_data["weather"][0]["description"],
-        "pressure": round(resp_data["main"]["pressure"] * 0.75006),
-        "visibility": resp_data.get("visibility", "Неизвестно")
-    }
 
-@safeexecute
+    return format_weather_data(weather_data, user)
+
+@safe_execute
 def watchdog_timer():
     global last_log_time
     while True:
-        time.sleep(3600 + 60)
-        if time.time() - last_log_time > 3600 + 50:
-            logging.critical("⏳ Чекер завис! Перезапускаем...")
+        time.sleep(3600 + 120)
+        if time.time() - last_log_time > 3600 + 110:
+            logging.critical("⏳ Чекер завис! Перезапуск...")
             os._exit(1)
 
-@safeexecute
+@safe_execute
 def update_last_log():
     global last_log_time
     last_log_time = time.time()
 
 threading.Thread(target=watchdog_timer, daemon=True).start()
 
-@safeexecute
+@safe_execute
 def check_weather_changes_for_city(city):
     session = Session()
     current_data = get_weather_data(city)
@@ -190,25 +188,25 @@ def check_weather_changes_for_city(city):
     session.close()
     return True
 
-@safeexecute
+@safe_execute
 def check_all_cities():
     session = Session()
     cities = session.query(User.preferred_city).filter(User.notifications_enabled == True).distinct().all()
     session.close()
 
-    cities = {city[0] for city in cities if city[0]}  # Убираем пустые значения
-    checked_cities = set()  # Храним успешно проверенные города
+    cities = {city[0] for city in cities if city[0]} 
+    checked_cities = set()  
 
     attempt = 1
-    max_attempts = 3  # Количество повторных проверок, если остались непройденные города
+    max_attempts = 3  
 
     while cities - checked_cities and attempt <= max_attempts:
-        remaining_cities = cities - checked_cities  # Города, которые еще не проверены
+        remaining_cities = cities - checked_cities 
 
         logging.info(f"🔄 Попытка #{attempt}: Проверяем {len(remaining_cities)} оставшихся городов...")
 
         for city in remaining_cities:
-            success = check_weather_changes_for_city(city)  # Проверяем город
+            success = check_weather_changes_for_city(city)  
 
             if success:
                 checked_cities.add(city)  
@@ -219,7 +217,7 @@ def check_all_cities():
     if cities - checked_cities:
         logging.warning(f"⚠️ Остались непроверенные города: {cities - checked_cities}")
 
-@safeexecute
+@safe_execute
 def notify_admin(message):
     ADMIN_ID = os.getenv("ADMIN_ID")
     if ADMIN_ID:
@@ -230,15 +228,21 @@ def notify_admin(message):
 
 if __name__ == '__main__':
     while True:
-        try:
-            logging.info("🔄 Запуск цикла проверки погоды...")
-            check_all_cities()
-            logging.info("✅ Проверка завершена. Ожидание следующего цикла...")
-        except Exception as e:
-            logging.critical(f"🔥 Критическая ошибка в основном цикле: {e}")
-            notify_admin(f"Чекер упал! Ошибка: {e}") 
         now = datetime.utcnow()
         next_run = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-        sleep_time = max(0, (next_run - now).total_seconds())
+
+        if now - datetime.utcfromtimestamp(last_log_time) < timedelta(hours=1):
+            logging.info("⏭ Пропуск проверки, так как последний запуск был менее часа назад.")
+        else:
+            try:
+                logging.info("🔄 Запуск цикла проверки погоды...")
+                check_all_cities()
+                update_last_log()
+                logging.info("✅ Проверка завершена. Ожидание следующего цикла...")
+            except Exception as e:
+                logging.critical(f"🔥 Критическая ошибка в основном цикле: {e}")
+                notify_admin(f"Чекер упал! Ошибка: {e}") 
+
+        sleep_time = max(0, (next_run - datetime.utcnow()).total_seconds())
         logging.info(f"🕒 Следующая проверка через {round(sleep_time)} секунд ({next_run})")
         time.sleep(sleep_time)

@@ -183,7 +183,7 @@ def get_today_forecast(city):
         "date": f"{date_formatted}",
         "day_name": day_name,
         "description": today_data["weather"][0]["description"].capitalize(),
-        "precipitation": today_data.get("pop", 0) * 100,
+        "precipitation": round(today_data.get("pop", 0) * 100),
         "temp_min": min(entry["main"]["temp"] for entry in raw_data),
         "temp_max": max(entry["main"]["temp"] for entry in raw_data),
         "pressure": today_data["main"]["pressure"],
@@ -216,7 +216,7 @@ def get_weekly_forecast(city):
                 "pressure": entry["main"]["pressure"],
                 "wind_speed": entry["wind"]["speed"],
                 "description": entry["weather"][0]["description"].capitalize(),
-                "precipitation": entry.get("pop", 0) * 100
+                "precipitation": round(entry.get("pop", 0) * 100)
             }
 
         daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], entry["main"]["temp"])
