@@ -1,6 +1,6 @@
 import os
 from sqlalchemy import Column, Integer, BigInteger, String, Float, Boolean, DateTime
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -17,12 +17,25 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, unique=True, nullable=False)
+    unique_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255), unique=True, nullable=True)
     preferred_city = Column(String(255), nullable=True)
-    notifications_enabled = Column(Boolean, default=False, server_default='0', nullable=False)
+    notifications_enabled = Column(Boolean, default=True, server_default='1', nullable=False)
+
+    tracked_weather_params = Column(String(512), nullable=False, default="description,temperature,humidity,precipitation,pressure,wind_speed,visibility")
     temp_unit = Column(String(10), default="C") 
     pressure_unit = Column(String(10), default="mmHg") 
     wind_speed_unit = Column(String(10), default="m/s") 
+    
+    level = Column(Integer, default=1)  # Уровень пользователя
+    exp = Column(Integer, default=0)  # Опыт пользователя
+    titles = Column(String(512), default="[]")  # JSON-список титулов
+    selected_titles = Column(String(512), default="[]")  # JSON-список выбранных титулов (до 5 штук)
+    profile_card = Column(String(255), default="default.png")  # Картинка профиля
+    logged = Column(Boolean, default=False)  # Был ли пользователь активен сегодня
+
+    
+
 
 class CheckedCities(Base):
     __tablename__ = 'checked_cities'

@@ -1,4 +1,4 @@
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import create_engine
 from telebot import types
 from weather import fetch_today_forecast, fetch_weekly_forecast
@@ -35,6 +35,23 @@ WEEKDAYS_RU = {
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(bind=engine)
+
+def update_user(user_id: int, **kwargs):
+    """Обновляет данные пользователя в БД. kwargs - любые поля, которые нужно обновить."""
+    db: Session = SessionLocal()
+    user = db.query(User).filter(User.user_id == user_id).first()
+    
+    if not user:
+        db.close()
+        return False 
+
+    for key, value in kwargs.items():
+        if hasattr(user, key):  
+            setattr(user, key, value)
+
+    db.commit()
+    db.close()
+    return True
 
 #ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О ПОЛЬЗОВАТЕЛЕ
 def get_user(user_id):
@@ -170,87 +187,43 @@ def log_action(action, message):
                    f"Message: {message.text}")
     logging.debug(log_message)
 
-#ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
-
-"""НА СЕГОДНЯ"""
-def get_today_forecast(city):
-    raw_data = fetch_today_forecast(city)
-    if not raw_data:
-        return None  
-
-    today = date.today()
-    day_name = WEEKDAYS_RU[today.strftime("%A")]
-    date_formatted = f"{today.day} {MONTHS_RU[today.month]}"  
-
-    today_data = raw_data[0]
-
-    return {
-        "date": f"{date_formatted}",
-        "day_name": day_name,
-        "description": today_data["weather"][0]["description"].capitalize(),
-        "precipitation": round(today_data.get("pop", 0) * 100),
-        "temp_min": min(entry["main"]["temp"] for entry in raw_data),
-        "temp_max": max(entry["main"]["temp"] for entry in raw_data),
-        "pressure": today_data["main"]["pressure"],
-        "wind_speed": today_data["wind"]["speed"]
-    }
-
-"""НА НЕДЕЛЮ"""
-def get_weekly_forecast(city):
-    raw_data = fetch_weekly_forecast(city)
-    if not raw_data:
-        return None  
-
-    daily_data = {}
-    today = date.today()
-    start_date = today + timedelta(days=1)
-
-    for entry in raw_data:
-        timestamp = entry["dt"] 
-        date_obj = datetime.fromtimestamp(timestamp).date()
-        day_name = WEEKDAYS_RU[date_obj.strftime("%A")]
-
-        if date_obj < start_date or (date_obj - start_date).days >= 5:
-            continue
-
-        if date_obj not in daily_data:
-            daily_data[date_obj] = {
-                "day_name": day_name,
-                "temp_min": entry["main"]["temp"],
-                "temp_max": entry["main"]["temp"],
-                "pressure": entry["main"]["pressure"],
-                "wind_speed": entry["wind"]["speed"],
-                "description": entry["weather"][0]["description"].capitalize(),
-                "precipitation": round(entry.get("pop", 0) * 100)
-            }
-
-        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], entry["main"]["temp"])
-        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj]["temp_max"], entry["main"]["temp"])
-
-    return [
-        {
-            "date": f"{date.day} {MONTHS_RU[date.month]}",
-            "day_name": data["day_name"],
-            **data
-        }
-        for date, data in sorted(daily_data.items())
-    ]
-
 #КЛАВИАТУРЫ
-"""ПРОГНОЗ ПОГОДЫ"""
 def generate_forecast_keyboard():
+    """ПРОГНОЗ ПОГОДЫ"""
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
     keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_forecast_menu"))
     return keyboard
 
-"""ВЫБОР ДАННЫХ"""
 def generate_format_keyboard():
+    """ВЫБОР ДАННЫХ"""
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("Температура", callback_data="change_temp_unit"))
     keyboard.add(types.InlineKeyboardButton("Давление", callback_data="change_pressure_unit"))
     keyboard.add(types.InlineKeyboardButton("Скорость ветра", callback_data="change_wind_speed_unit"))
+    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
+    return keyboard
+
+def generate_weather_data_keyboard(user):
+    """Создаёт клавиатуру для выбора отображаемых данных"""
+    options = {
+        "description": "Описание",
+        "temperature": "Температура",
+        "humidity": "Влажность",
+        "precipitation": "Вероятность осадков",
+        "pressure": "Давление",
+        "wind_speed": "Скорость ветра",
+        "visibility": "Видимость"
+    }
+
+    selected_params = user.tracked_weather_params.split(",") if user.tracked_weather_params else []
+    keyboard = types.InlineKeyboardMarkup()
+
+    for key, label in options.items():
+        icon = " ✅" if key in selected_params else ""
+        keyboard.add(types.InlineKeyboardButton(f"{label}{icon}", callback_data=f"toggle_weather_param_{key}"))
+
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
     return keyboard
 
@@ -272,23 +245,37 @@ def generate_unit_selection_keyboard(current_value, unit_type):
 
 #ФОРМАТИРОВАНИЕ
 def format_weather_data(data, user):
-    logging.debug(f"Конвертация: {data['temp']}° -> {convert_temperature(data['temp'], user.temp_unit)} {user.temp_unit}")
-    logging.debug(f"Конвертация: {data['pressure']} -> {convert_pressure(data['pressure'], user.pressure_unit)} {user.pressure_unit}")
-    logging.debug(f"Конвертация: {data['wind_speed']} -> {convert_wind_speed(data['wind_speed'], user.wind_speed_unit)} {user.wind_speed_unit}")
+    """Форматирует погодные данные с учётом единиц измерения и настроек пользователя"""
+    tracked_params = set(user.tracked_weather_params.split(",")) if user.tracked_weather_params else set()
 
     temperature = convert_temperature(data["temp"], user.temp_unit)
     pressure = convert_pressure(data["pressure"], user.pressure_unit)
     wind_speed = convert_wind_speed(data["wind_speed"], user.wind_speed_unit)
 
-    return (f"Текущая погода в г.{data['city_name']}:\n"
-            f"\n"
-            f"▸ Погода: {data['description']}\n"
-            f"▸ Температура: {temperature:.1f}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
-            f"▸ Влажность: {data['humidity']}%\n"
-            f"▸ Давление: {pressure:.1f} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
-            f"▸ Скорость ветра: {wind_speed:.1f} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
-            f"▸ Видимость: {data['visibility']} м\n\n"
-            f"      ⟪ Deus Weather ⟫")
+    # Логирование конвертации (можно оставить для отладки)
+    logging.debug(f"Конвертация: {data['temp']}° -> {temperature} {user.temp_unit}")
+    logging.debug(f"Конвертация: {data['pressure']} -> {pressure} {user.pressure_unit}")
+    logging.debug(f"Конвертация: {data['wind_speed']} -> {wind_speed} {user.wind_speed_unit}")
+
+    weather_text = f"<b>Текущая погода в г.{data['city_name']}:</b>\n\n"
+
+    # Список параметров с их названиями
+    params = {
+        "description": ("Погода", data["description"]),
+        "temperature": ("Температура", f"{temperature:.1f}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"),
+        "humidity": ("Влажность", f"{data['humidity']}%"),
+        "precipitation": ("Вероятность осадков", f"{data.get('precipitation', 0)}%"),
+        "pressure": ("Давление", f"{pressure:.1f} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}"),
+        "wind_speed": ("Скорость ветра", f"{wind_speed:.1f} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"),
+        "visibility": ("Видимость", f"{data['visibility']} м")
+    }
+
+    # Добавляем только выбранные параметры
+    for param, (label, value) in params.items():
+        if param in tracked_params:
+            weather_text += f"▸ {label}: {value}\n"
+
+    return weather_text + "\n      ⟪ Deus Weather ⟫"
 
 def format_change(label, old_value, new_value, unit=""):
     """Форматирует изменения данных, добавляя стрелки при изменении значений."""
@@ -305,6 +292,79 @@ def convert_precipitation_to_percent(precipitation_mm):
 
 #ОБРАБОТЧИК КОМАНД
 def is_valid_command(text):
-    valid_commands = ["/start", "/weather", "/changecity", "🌦 Узнать погоду", "📅 Прогноз погоды", "⚙️ Настройки"]
+    valid_commands = ["/start", "/weather", "/changecity", "🌎 Узнать погоду", "📅 Прогноз погоды", "⚙️ Настройки"]
     return text in valid_commands
 
+#ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
+def get_today_forecast(city, user):
+    """Прогноз погоды на сегодня"""
+    raw_data = fetch_today_forecast(city)
+    if not raw_data:
+        return None  
+
+    today = date.today()
+    day_name = WEEKDAYS_RU[today.strftime("%A")]
+    date_formatted = f"{today.day} {MONTHS_RU[today.month]}"  
+
+    today_data = raw_data[0]
+
+    if "main" not in today_data or "temp" not in today_data["main"]:
+        logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {today_data}")
+        return None  
+
+    return {
+        "date": f"{date_formatted}",
+        "day_name": day_name,
+        "description": today_data["weather"][0]["description"].capitalize(),
+        "precipitation": round(today_data.get("pop", 0) * 100),
+        "temp_min": today_data["main"]["temp_min"],
+        "temp_max": today_data["main"]["temp_max"],
+        "pressure": today_data["main"]["pressure"],
+        "wind_speed": today_data["wind"]["speed"]
+    }
+
+
+def get_weekly_forecast(city, user):
+    """Прогноз погоды на неделю"""
+    raw_data = fetch_weekly_forecast(city)
+    if not raw_data:
+        return None  
+
+    daily_data = {}
+    today = date.today()
+    start_date = today + timedelta(days=1)
+
+    for entry in raw_data:
+        timestamp = entry["dt"] 
+        date_obj = datetime.fromtimestamp(timestamp).date()
+        day_name = WEEKDAYS_RU[date_obj.strftime("%A")]
+
+        if date_obj < start_date or (date_obj - start_date).days >= 5:
+            continue
+
+        if "main" not in entry or "temp" not in entry["main"]:
+            logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
+            continue
+
+        if date_obj not in daily_data:
+            daily_data[date_obj] = {
+                "day_name": day_name,
+                "temp_min": entry["main"]["temp_min"],
+                "temp_max": entry["main"]["temp_max"],
+                "pressure": entry["main"]["pressure"],
+                "wind_speed": entry["wind"]["speed"],
+                "description": entry["weather"][0]["description"].capitalize(),
+                "precipitation": round(entry.get("pop", 0) * 100)
+            }
+
+        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], entry["main"]["temp_min"])
+        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj]["temp_max"], entry["main"]["temp_max"])
+
+    return [
+        {
+            "date": f"{date.day} {MONTHS_RU[date.month]}",
+            "day_name": data["day_name"],
+            **data
+        }
+        for date, data in sorted(daily_data.items())
+    ]

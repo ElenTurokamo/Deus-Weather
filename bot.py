@@ -2,7 +2,7 @@
 from telebot import types
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
-from logic import get_user, save_user
+from logic import get_user, save_user, update_user
 from logic import *
 from weather import get_weather
 from datetime import datetime, timezone
@@ -124,7 +124,7 @@ def settings_option(chat_id, reply_markup=None):
 
 def send_main_menu(chat_id):
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    main_keyboard.row("🌦 Узнать погоду", "📅 Прогноз погоды")
+    main_keyboard.row("🌎 Узнать погоду", "📅 Прогноз погоды")
     main_keyboard.row("👥 Друзья", "🎭 Профиль")
     main_keyboard.row("⚙️ Настройки")
     loading_message = bot.send_message(chat_id, "Загрузка...")
@@ -132,10 +132,12 @@ def send_main_menu(chat_id):
     menu_option(chat_id, reply_markup=main_keyboard)
 
 def send_settings_menu(chat_id):
+    """Вывод клавиатуры с меню настроек по команде пользователя"""
     settings_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     settings_keyboard.row("🏙 Изменить город","🔔 Уведомления")
-    settings_keyboard.row("📏 Единицы измерения")
+    settings_keyboard.row("🌦 Погодные данные", "📏 Единицы измерения")
     settings_keyboard.row("↩ Назад")
+
     loading_message = bot.send_message(chat_id, "Загрузка...")
     bot.delete_message(chat_id, loading_message.message_id)
     settings_option(chat_id, reply_markup=settings_keyboard)
@@ -144,51 +146,51 @@ def send_settings_menu(chat_id):
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["forecast_today", "forecast_week"])
 def forecast_handler(call):
+    """Обработчик прогноза погоды на сегодня и неделю с учётом пользовательских настроек"""
     chat_id = call.message.chat.id
     user = get_user(call.from_user.id)
     menu_message_id = call.message.message_id
 
     if not user or not user.preferred_city:
-        bot.send_message(chat_id, "Сначала укажите ваш город в настройках!")
+        bot.send_message(chat_id, "⚠ Сначала укажите ваш город в настройках!")
         return
 
-    if call.data == "forecast_today":
-        forecast_data = [get_today_forecast(user.preferred_city)]
-    else:
-        forecast_data = get_weekly_forecast(user.preferred_city) 
+    # Получаем данные прогноза
+    forecast_data = [get_today_forecast(user.preferred_city, user)] if call.data == "forecast_today" else get_weekly_forecast(user.preferred_city, user)
 
     if not forecast_data or None in forecast_data:
-        bot.send_message(chat_id, "Не удалось получить прогноз погоды.")
+        bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
 
-    forecast_text = "\n".join([
-        f"*{day['date']}, {day['day_name']}*\n\n"
-        f"▸ Погода: {day['description']}\n"
-        f"▸ Осадки: {day['precipitation']}%\n"
-        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
-        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
-        f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
-        f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
-        for day in forecast_data
-    ]) + "\n      ⟪ Deus Weather ⟫" if call.data == "forecast_today" else "\n".join([
-        f"✦ *{day['date']}, {day['day_name']}*\n"
-        f"▸ Погода: {day['description']}\n"
-        f"▸ Осадки: {day['precipitation']}%\n"
-        f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
-        f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
-        f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
-        f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
-        for day in forecast_data
-    ]) + "\n      ⟪ Deus Weather ⟫"
+    # Генерируем прогноз с учётом параметров пользователя
+    def format_forecast(day):
+        parts = [f"<b>✦ {day['date']}, {day['day_name']}</b>"]
+        if "description" in user.tracked_weather_params:
+            parts.append(f"▸ Погода: {day['description']}")
+        if "precipitation" in user.tracked_weather_params:
+            parts.append(f"▸ Вероятность осадков: {day['precipitation']}%")
+        if "temp_min" in user.tracked_weather_params and "temp_max" in user.tracked_weather_params:
+            parts.append(
+                f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
+                f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"
+            )
+        if "pressure" in user.tracked_weather_params:
+            parts.append(f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}")
+        if "wind_speed" in user.tracked_weather_params:
+            parts.append(f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}")
 
+        return "\n".join(parts)
+
+    forecast_text = "\n\n".join(map(format_forecast, forecast_data)) + "\n\n      ⟪ Deus Weather ⟫"
+
+    # Отправляем прогноз пользователю
     try:
-        bot.edit_message_text(forecast_text, chat_id, menu_message_id, parse_mode="Markdown")
+        bot.edit_message_text(forecast_text, chat_id, menu_message_id, parse_mode="HTML")
     except Exception as e:
-        logging.warning(f"Не удалось отредактировать сообщение: {e}")
-        bot.send_message(chat_id, forecast_text, parse_mode="Markdown")
+        logging.warning(f"⚠ Не удалось отредактировать сообщение: {e}")
+        bot.send_message(chat_id, forecast_text, parse_mode="HTML")
 
-    send_main_menu(chat_id) 
-
+    send_main_menu(chat_id)
 
 #НАВИГАЦИОННЫЕ ОБРАБОТЧИКИ
 @safe_execute
@@ -299,7 +301,7 @@ def weather(message):
 
     weather_info = format_weather_data(weather_data, user)
 
-    bot.reply_to(message, weather_info)
+    bot.reply_to(message, weather_info, parse_mode="HTML")
     send_main_menu(message.chat.id)
 
 
@@ -547,12 +549,66 @@ def settings_back_to_main_menu(message):
         logging.warning(f"Ошибка при удалении сообщения '↩ Назад': {e}")
 
 @safe_execute
+@bot.message_handler(func=lambda message: message.text == "🌦 Погодные данные")
+def weather_data_settings(message):
+    """Обработчик кнопки 'Погодные данные' в настройках"""
+    delete_duplicate_command(message)
+    user = get_user(message.from_user.id)
+    chat_id = message.chat.id
+
+    if chat_id in last_menu_message:
+        try:
+            bot.delete_message(chat_id, last_menu_message[chat_id])
+            del last_menu_message[chat_id]
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
+
+    if not user:
+        bot.send_message(message.chat.id, "Ошибка: пользователь не найден.")
+        return
+
+    text = "Выберите, какие данные показывать в прогнозе:"
+    keyboard = generate_weather_data_keyboard(user)
+    bot.send_message(message.chat.id, text, reply_markup=keyboard)
+
+@safe_execute
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_weather_param_"))
+def toggle_weather_param(call):
+    """Обработчик изменения отображаемых данных в прогнозе"""
+    chat_id = call.message.chat.id
+    user = get_user(call.from_user.id)
+    param = call.data.replace("toggle_weather_param_", "")
+    if not user:
+        return  
+
+    current_params = set(user.tracked_weather_params.split(",")) if user.tracked_weather_params else set()
+
+    if param in current_params:
+        current_params.remove(param)
+    else:
+        current_params.add(param)
+
+    new_params_str = ",".join(current_params)
+
+    if new_params_str == user.tracked_weather_params:
+        return 
+
+    update_user(user.user_id, tracked_weather_params=new_params_str)
+    user = get_user(call.from_user.id)
+    new_keyboard = generate_weather_data_keyboard(user)
+
+    try:
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_keyboard)
+    except Exception as e:
+        logging.warning(f"Ошибка при обновлении клавиатуры: {e}")
+
+@safe_execute
 @bot.message_handler(func=lambda message: message.text in menu_actions)
 def menu_handler(message):
     menu_actions[message.text](message)
 
 menu_actions = {
-    "🌦 Узнать погоду": weather,
+    "🌎 Узнать погоду": weather,
     "📅 Прогноз погоды": forecast_menu,
     "⚙️ Настройки": lambda msg: send_settings_menu(msg.chat.id),
     "👥 Друзья": feature_in_development,
@@ -560,7 +616,8 @@ menu_actions = {
     "🏙 Изменить город": changecity,
     "🔔 Уведомления": notifications_settings,
     "↩ Назад": settings_back_to_main_menu,
-    "📏 Единицы измерения": lambda msg: format_settings(msg)
+    "📏 Единицы измерения": lambda msg: format_settings(msg),
+    "🌦 Погодные данные": generate_weather_data_keyboard
 }
 
 @safe_execute
