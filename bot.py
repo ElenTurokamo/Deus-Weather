@@ -5,6 +5,7 @@ from logging.handlers import RotatingFileHandler
 from logic import get_user, save_user
 from logic import *
 from weather import get_weather
+from datetime import datetime, timezone
 
 import logging
 import time
@@ -15,20 +16,17 @@ import re
 
 #ШИФРОВАНИЕ
 load_dotenv()
-bot_start_time = time.time()
 
-#ЛОГИРОВАНИЕ
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logging.info(f"Бот стартовал в {bot_start_time}.")
+#ПЕРЕМЕННЫЕ
+bot_start_time = time.time()
+rounded_time = datetime.fromtimestamp(round(bot_start_time), timezone.utc)
+
+# ЛОГИРОВАНИЕ
+LOG_FILE = "logs/bot.log"
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 if not os.path.exists("logs"):
     os.makedirs("logs")
-
-LOG_FILE = "logs/bot.log"
-LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=5, encoding="utf-8")
 file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
@@ -36,9 +34,15 @@ file_handler.setLevel(logging.DEBUG)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.DEBUG)
 
-logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler])
+logging.basicConfig(
+    level=logging.DEBUG,
+    format=LOG_FORMAT,
+    handlers=[file_handler, console_handler]
+)
+
+logging.info(f"Бот стартовал в {rounded_time}")
 
 #ДЕШИФРОВКА И ИДЕНТИФИКАЦИЯ ТОКЕНА БОТА
 BOT_TOKEN = os.getenv("BOT_TOKEN")

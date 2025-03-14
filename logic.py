@@ -48,6 +48,11 @@ def get_user(user_id):
     return user
 active_sessions = {}
 
+#БЕЗОПАСНЫЙ ИМПОРТ БОТА
+def get_bot():
+    bot_module = importlib.import_module("bot")
+    return bot_module.bot
+
 #СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЯ
 def save_user(user_id, username=None, preferred_city=None):
     db = SessionLocal()
@@ -137,7 +142,7 @@ def convert_wind_speed(value, unit):
 
 #ЗАЩИТА ОТ КРАША
 def safe_execute(func):
-    from bot import bot
+    bot = get_bot()
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -265,7 +270,7 @@ def generate_unit_selection_keyboard(current_value, unit_type):
     keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="format_settings"))
     return keyboard
 
-#ФОРМАТИРОВАНИЕ ЕДИНИЦ ИЗМЕРЕНИЕ
+#ФОРМАТИРОВАНИЕ
 def format_weather_data(data, user):
     logging.debug(f"Конвертация: {data['temp']}° -> {convert_temperature(data['temp'], user.temp_unit)} {user.temp_unit}")
     logging.debug(f"Конвертация: {data['pressure']} -> {convert_pressure(data['pressure'], user.pressure_unit)} {user.pressure_unit}")
@@ -284,6 +289,13 @@ def format_weather_data(data, user):
             f"▸ Скорость ветра: {wind_speed:.1f} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
             f"▸ Видимость: {data['visibility']} м\n\n"
             f"      ⟪ Deus Weather ⟫")
+
+def format_change(label, old_value, new_value, unit=""):
+    """Форматирует изменения данных, добавляя стрелки при изменении значений."""
+    if old_value is None or old_value != new_value:
+        arrow = "📈" if new_value > old_value else "📉"
+        return f"<b>{label}: {new_value}{unit} {arrow}</b>"
+    return f"{label}: {new_value}{unit}"
 
 #КОНВЕРТАЦИЯ ОСАДКОВ В %
 def convert_precipitation_to_percent(precipitation_mm):
