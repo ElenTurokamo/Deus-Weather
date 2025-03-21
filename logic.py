@@ -243,7 +243,6 @@ def generate_unit_selection_keyboard(current_value, unit_type):
     keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="format_settings"))
     return keyboard
 
-#ФОРМАТИРОВАНИЕ
 def format_weather_data(data, user):
     """Форматирует погодные данные с учётом единиц измерения и настроек пользователя"""
     tracked_params = set(user.tracked_weather_params.split(",")) if user.tracked_weather_params else set()
@@ -252,14 +251,14 @@ def format_weather_data(data, user):
     pressure = convert_pressure(data["pressure"], user.pressure_unit)
     wind_speed = convert_wind_speed(data["wind_speed"], user.wind_speed_unit)
 
-    # Логирование конвертации (можно оставить для отладки)
     logging.debug(f"Конвертация: {data['temp']}° -> {temperature} {user.temp_unit}")
     logging.debug(f"Конвертация: {data['pressure']} -> {pressure} {user.pressure_unit}")
     logging.debug(f"Конвертация: {data['wind_speed']} -> {wind_speed} {user.wind_speed_unit}")
 
-    weather_text = f"<b>Текущая погода в г.{data['city_name']}:</b>\n\n"
+    weather_text = (
+        (f"<b>✦ </b>" + f"<u><b>Сейчас в г.{data['city_name']}:</b></u>\n")
+    )
 
-    # Список параметров с их названиями
     params = {
         "description": ("Погода", data["description"]),
         "temperature": ("Температура", f"{temperature:.1f}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"),
@@ -270,9 +269,9 @@ def format_weather_data(data, user):
         "visibility": ("Видимость", f"{data['visibility']} м")
     }
 
-    # Добавляем только выбранные параметры
     for param, (label, value) in params.items():
         if param in tracked_params:
+            logging.debug(f"Добавление параметра: {param} - {label}: {value}")
             weather_text += f"▸ {label}: {value}\n"
 
     return weather_text + "\n      ⟪ Deus Weather ⟫"
@@ -295,6 +294,22 @@ def is_valid_command(text):
     valid_commands = ["/start", "/weather", "/changecity", "🌎 Узнать погоду", "📅 Прогноз погоды", "⚙️ Настройки"]
     return text in valid_commands
 
+#ПОЛУЧЕНИЕ ПОГОДНЫХ ДАННЫХ
+def extract_weather_data(entry):
+    """Извлекает погодные данные из записи API"""
+    temp = entry["main"]["temp"]
+    return {
+        "temp": temp,
+        "temp_min": entry["main"].get("temp_min", temp),
+        "temp_max": entry["main"].get("temp_max", temp),
+        "humidity": entry["main"].get("humidity", None),
+        "visibility": entry.get("visibility", None),
+        "pressure": entry["main"]["pressure"],
+        "wind_speed": entry["wind"]["speed"],
+        "description": entry["weather"][0]["description"].capitalize(),
+        "precipitation": round(entry.get("pop", 0) * 100)
+    }
+
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
 def get_today_forecast(city, user):
     """Прогноз погоды на сегодня"""
@@ -312,16 +327,13 @@ def get_today_forecast(city, user):
         logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {today_data}")
         return None  
 
-    return {
-        "date": f"{date_formatted}",
-        "day_name": day_name,
-        "description": today_data["weather"][0]["description"].capitalize(),
-        "precipitation": round(today_data.get("pop", 0) * 100),
-        "temp_min": today_data["main"]["temp_min"],
-        "temp_max": today_data["main"]["temp_max"],
-        "pressure": today_data["main"]["pressure"],
-        "wind_speed": today_data["wind"]["speed"]
-    }
+    weather_data = extract_weather_data(today_data)
+    weather_data.update({
+        "date": date_formatted,
+        "day_name": day_name
+    })
+
+    return weather_data
 
 
 def get_weekly_forecast(city, user):
@@ -346,19 +358,16 @@ def get_weekly_forecast(city, user):
             logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
             continue
 
+        weather_data = extract_weather_data(entry)
+
         if date_obj not in daily_data:
             daily_data[date_obj] = {
                 "day_name": day_name,
-                "temp_min": entry["main"]["temp_min"],
-                "temp_max": entry["main"]["temp_max"],
-                "pressure": entry["main"]["pressure"],
-                "wind_speed": entry["wind"]["speed"],
-                "description": entry["weather"][0]["description"].capitalize(),
-                "precipitation": round(entry.get("pop", 0) * 100)
+                **weather_data
             }
 
-        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], entry["main"]["temp_min"])
-        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj]["temp_max"], entry["main"]["temp_max"])
+        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], weather_data["temp"])
+        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj]["temp_max"], weather_data["temp"])
 
     return [
         {

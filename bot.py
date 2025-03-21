@@ -142,7 +142,7 @@ def send_settings_menu(chat_id):
     bot.delete_message(chat_id, loading_message.message_id)
     settings_option(chat_id, reply_markup=settings_keyboard)
 
-#ОБРАБОТЧИК ПРОГНОЗОВ ПОГОДЫ (СЕГОДНЯ/НЕДЕЛЯ)
+# ОБРАБОТЧИК ПРОГНОЗОВ ПОГОДЫ (СЕГОДНЯ/НЕДЕЛЯ)
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["forecast_today", "forecast_week"])
 def forecast_handler(call):
@@ -151,45 +151,67 @@ def forecast_handler(call):
     user = get_user(call.from_user.id)
     menu_message_id = call.message.message_id
 
+    # Проверяем, задан ли город у пользователя
     if not user or not user.preferred_city:
         bot.send_message(chat_id, "⚠ Сначала укажите ваш город в настройках!")
         return
 
     # Получаем данные прогноза
-    forecast_data = [get_today_forecast(user.preferred_city, user)] if call.data == "forecast_today" else get_weekly_forecast(user.preferred_city, user)
+    if call.data == "forecast_today":
+        forecast_data = [get_today_forecast(user.preferred_city, user)]
+    else:
+        forecast_data = get_weekly_forecast(user.preferred_city, user)
 
     if not forecast_data or None in forecast_data:
         bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
 
-    # Генерируем прогноз с учётом параметров пользователя
+    # Форматирование прогноза
     def format_forecast(day):
-        parts = [f"<b>✦ {day['date']}, {day['day_name']}</b>"]
+        parts = [f"<b>✦ </b>" + f"<u><b>{day['day_name']}, {day['date']}</b></u>"
+        ]
         if "description" in user.tracked_weather_params:
             parts.append(f"▸ Погода: {day['description']}")
+        if "temperature" in user.tracked_weather_params:
+            temp_min = day.get('temp_min', day.get('temp'))
+            temp_max = day.get('temp_max', day.get('temp'))
+            temp_unit = UNIT_TRANSLATIONS['temp'][user.temp_unit]
+            parts.append(
+                f"▸ Температура: от {round(convert_temperature(temp_min, user.temp_unit))}{temp_unit} "
+                f"до {round(convert_temperature(temp_max, user.temp_unit))}{temp_unit}"
+            )
+        if "humidity" in user.tracked_weather_params:
+             parts.append(f"▸ Влажность: {day['humidity']}%")
         if "precipitation" in user.tracked_weather_params:
             parts.append(f"▸ Вероятность осадков: {day['precipitation']}%")
-        if "temp_min" in user.tracked_weather_params and "temp_max" in user.tracked_weather_params:
-            parts.append(
-                f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]} "
-                f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"
-            )
         if "pressure" in user.tracked_weather_params:
             parts.append(f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}")
         if "wind_speed" in user.tracked_weather_params:
             parts.append(f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}")
+        if "visibility" in user.tracked_weather_params:
+            visibility = day.get('visibility', 0)
+            parts.append(f"▸ Видимость: {visibility} м")
 
         return "\n".join(parts)
 
-    forecast_text = "\n\n".join(map(format_forecast, forecast_data)) + "\n\n      ⟪ Deus Weather ⟫"
+    # Собираем текст прогноза
+    try:
+        forecast_text = "\n\n".join(map(format_forecast, forecast_data)) + "\n\n      ⟪ Deus Weather ⟫"
+    except KeyError as e:
+        logging.error(f"Ключ отсутствует в данных прогноза: {e}")
+        bot.send_message(chat_id, "⚠ Произошла ошибка при обработке прогноза.")
+        send_main_menu(chat_id)
+        return
 
     # Отправляем прогноз пользователю
     try:
         bot.edit_message_text(forecast_text, chat_id, menu_message_id, parse_mode="HTML")
     except Exception as e:
-        logging.warning(f"⚠ Не удалось отредактировать сообщение: {e}")
+        logging.warning(f"⚠ Не удалось отредактировать сообщение: {str(e)}")
+        send_main_menu(chat_id)
         bot.send_message(chat_id, forecast_text, parse_mode="HTML")
 
+    # Возвращаем главное меню
     send_main_menu(chat_id)
 
 #НАВИГАЦИОННЫЕ ОБРАБОТЧИКИ
@@ -287,18 +309,12 @@ def weather(message):
             logging.warning(f"Не удалось удалить сообщение: {e}")
 
     weather_data = get_weather(user.preferred_city)
+    logging.debug(f"Данные погоды для {user.preferred_city}: {weather_data}")
     if not weather_data:
         bot.reply_to(message, "Не удалось получить данные о погоде.")
         send_main_menu(message.chat.id)
         return
     
-    weather_data = get_weather(user.preferred_city)
-    if not weather_data:
-        bot.reply_to(message, "Не удалось получить данные о погоде.")
-        send_main_menu(message.chat.id)
-        return
-    
-
     weather_info = format_weather_data(weather_data, user)
 
     bot.reply_to(message, weather_info, parse_mode="HTML")
