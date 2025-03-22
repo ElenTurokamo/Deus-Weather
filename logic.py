@@ -42,15 +42,24 @@ def update_user(user_id: int, **kwargs):
     user = db.query(User).filter(User.user_id == user_id).first()
     
     if not user:
+        logging.error(f"Пользователь {user_id} не найден при попытке обновления.")
         db.close()
-        return False 
+        return False
 
     for key, value in kwargs.items():
-        if hasattr(user, key):  
+        if hasattr(user, key):
+            logging.debug(f"Обновление поля {key} для пользователя {user_id}: {value}")
             setattr(user, key, value)
 
-    db.commit()
-    db.close()
+    try:
+        db.commit()
+        logging.debug(f"Обновление пользователя {user_id} успешно завершено.")
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении пользователя {user_id}: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
     return True
 
 #ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О ПОЛЬЗОВАТЕЛЕ
@@ -197,7 +206,7 @@ def generate_forecast_keyboard():
     return keyboard
 
 def generate_format_keyboard():
-    """ВЫБОР ДАННЫХ"""
+    """ЕДИНИЦЫ ИЗМЕРЕНИЯ ДАННЫХ"""
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("Температура", callback_data="change_temp_unit"))
     keyboard.add(types.InlineKeyboardButton("Давление", callback_data="change_pressure_unit"))
@@ -255,8 +264,13 @@ def format_weather_data(data, user):
     logging.debug(f"Конвертация: {data['pressure']} -> {pressure} {user.pressure_unit}")
     logging.debug(f"Конвертация: {data['wind_speed']} -> {wind_speed} {user.wind_speed_unit}")
 
+    header = f"Сейчас в г.{data['city_name']}:"
+    max_line_length = 21
+    line = "─" * min(len(header), max_line_length)
+    
     weather_text = (
-        (f"<b>✦ </b>" + f"<u><b>Сейчас в г.{data['city_name']}:</b></u>\n")
+        f"<b>{header}</b>\n"
+        f"{line}\n"
     )
 
     params = {

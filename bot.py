@@ -22,25 +22,23 @@ bot_start_time = time.time()
 rounded_time = datetime.fromtimestamp(round(bot_start_time), timezone.utc)
 
 # ЛОГИРОВАНИЕ
-LOG_FILE = "logs/bot.log"
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "bot.log")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
-if not os.path.exists("logs"):
-    os.makedirs("logs")
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
 
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=5, encoding="utf-8")
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1, encoding="utf-8")
 file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-file_handler.setLevel(logging.DEBUG)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-console_handler.setLevel(logging.DEBUG)
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format=LOG_FORMAT,
-    handlers=[file_handler, console_handler]
-)
+logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler])
 
 logging.info(f"Бот стартовал в {rounded_time}")
 
@@ -51,27 +49,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 #СЛОВАРИ
 last_menu_message = {}
 last_user_command = {}
+last_settings_command = {}
 conversation_id = {}
 last_bot_message = {}
-
-def delete_duplicate_command(message):
-    """Удаляет предыдущее сообщение пользователя, если оно шло сразу перед командой
-       или если после него было только сообщение от бота."""
-    chat_id = message.chat.id
-    command = message.text 
-
-    if chat_id in last_user_command:
-        last_message_id = last_user_command[chat_id]["message_id"]
-
-        bot_message_id = last_bot_message.get(chat_id)
-
-        if last_message_id == message.message_id - 1 or (bot_message_id and bot_message_id == message.message_id - 1):
-            try:
-                bot.delete_message(chat_id, last_message_id)
-            except Exception as e:
-                logging.warning(f"Не удалось удалить старую команду: {e}")
-
-    last_user_command[chat_id] = {"command": command, "message_id": message.message_id}
 
 def track_bot_message(message):
     """Запоминает последнее отправленное сообщение от бота."""
@@ -151,12 +131,10 @@ def forecast_handler(call):
     user = get_user(call.from_user.id)
     menu_message_id = call.message.message_id
 
-    # Проверяем, задан ли город у пользователя
     if not user or not user.preferred_city:
         bot.send_message(chat_id, "⚠ Сначала укажите ваш город в настройках!")
         return
 
-    # Получаем данные прогноза
     if call.data == "forecast_today":
         forecast_data = [get_today_forecast(user.preferred_city, user)]
     else:
@@ -168,8 +146,11 @@ def forecast_handler(call):
 
     # Форматирование прогноза
     def format_forecast(day):
-        parts = [f"<b>✦ </b>" + f"<u><b>{day['day_name']}, {day['date']}</b></u>"
+        parts = [
+            f"<b>{day['day_name']}, {day['date']}</b>",
+            "─" * min(len(f"{day['day_name']}, {day['date']}"), 21)  
         ]
+
         if "description" in user.tracked_weather_params:
             parts.append(f"▸ Погода: {day['description']}")
         if "temperature" in user.tracked_weather_params:
@@ -188,9 +169,6 @@ def forecast_handler(call):
             parts.append(f"▸ Давление: {round(convert_pressure(day['pressure'], user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}")
         if "wind_speed" in user.tracked_weather_params:
             parts.append(f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}")
-        if "visibility" in user.tracked_weather_params:
-            visibility = day.get('visibility', 0)
-            parts.append(f"▸ Видимость: {visibility} м")
 
         return "\n".join(parts)
 
@@ -220,23 +198,39 @@ def forecast_handler(call):
 def back_to_settings_callback(call):
     """Обработчик возврата в меню настроек"""
     chat_id = call.message.chat.id
-    bot.delete_message(chat_id, call.message.message_id)
-    
+
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception as e:
+        logging.warning(f"Ошибка при удалении сообщения с кнопкой 'Назад': {e}")
+
+    if chat_id in last_user_command:
+        message_id = last_user_command[chat_id]
+        try:
+            bot.delete_message(chat_id, message_id)
+            del last_user_command[chat_id]
+            logging.debug(f"Удалено сообщение команды: {message_id}")
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении сообщения команды: {e}")
+
     if chat_id in last_menu_message:
         try:
-            bot.delete_message(chat_id, last_menu_message[chat_id]) 
+            bot.delete_message(chat_id, last_menu_message[chat_id])
+            del last_menu_message[chat_id]
         except Exception as e:
-            logging.warning(f"Ошибка при удалении сообщения: {e}")
+            logging.warning(f"Ошибка при удалении декоративного сообщения: {e}")
 
     send_settings_menu(chat_id)
-    
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "⚙️ Настройки")
 def settings_menu_handler(message):
     """Обработчик вызова меню настроек через сообщение"""
-    delete_duplicate_command(message)
+    (message)
     chat_id = message.chat.id
+
+    last_settings_command[chat_id] = message.message_id
+    logging.debug(f"Сохранён ID команды 'Настройки': {message.message_id} для чата {chat_id}")
 
     if chat_id in last_menu_message:
         try:
@@ -254,6 +248,14 @@ def back_to_main_callback(call):
     """Обработчик возврата в главное меню"""
     chat_id = call.message.chat.id
     bot.delete_message(chat_id, call.message.message_id)
+
+    if chat_id in last_user_command:
+        try:
+            bot.delete_message(chat_id, last_user_command[chat_id])
+            logging.debug(f"Удалено сообщение команды: {last_user_command[chat_id]} для чата {chat_id}")
+            del last_user_command[chat_id]
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении сообщения команды: {e}")
 
     if chat_id in last_menu_message:
         try:
@@ -292,7 +294,7 @@ def start(message):
 @bot.message_handler(commands=['weather'])
 def weather(message):
     """Отправка текущей погоды в городе пользователя"""
-    delete_duplicate_command(message)
+    (message)
     user_id = message.from_user.id
     user = get_user(user_id)
     logging.debug(f"Получена команда /weather от {user_id}.")
@@ -324,7 +326,7 @@ def weather(message):
 @safe_execute
 @bot.message_handler(regexp=r"^(\/changecity|🏙 Изменить город)$")
 def changecity(message):
-    delete_duplicate_command(message)
+    (message)
     log_action("Получена команда /changecity", message)
     user_id = message.from_user.id
     user = get_user(user_id)
@@ -349,23 +351,36 @@ def changecity(message):
 
     last_menu_message[chat_id] = reply.message_id
 
+    last_user_command[chat_id] = message.message_id
+
     bot.register_next_step_handler(reply, process_new_city, show_menu=True)
 
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_changecity")
 def cancel_changecity_callback(call):
-    """Обработчик отмены смены города"""
+    """Обработчик кнопки 'Отмена' для команды /changecity"""
     chat_id = call.message.chat.id
 
-    bot.delete_message(chat_id, call.message.message_id)
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception as e:
+        logging.warning(f"Ошибка при удалении сообщения с кнопкой 'Отмена': {e}")
+
+    if chat_id in last_user_command:
+        try:
+            bot.delete_message(chat_id, last_user_command[chat_id])
+            del last_user_command[chat_id]
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении сообщения команды /changecity: {e}")
+
     bot.clear_step_handler_by_chat_id(chat_id)
     send_settings_menu(chat_id)
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "🔔 Уведомления")
 def notifications_settings(message):
-    delete_duplicate_command(message)
+    (message)
     log_action("Пользователь открыл настройки уведомлений", message)
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -395,14 +410,17 @@ def notifications_settings(message):
     keyboard.add(types.InlineKeyboardButton("❌ Отключить уведомления", callback_data="disable_notifications"))
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
 
-    bot.reply_to(message, status_message, reply_markup=keyboard)
+    reply = bot.reply_to(message, status_message, reply_markup=keyboard)
+
+    last_user_command[chat_id] = message.message_id
+    last_menu_message[chat_id] = reply.message_id
 
 """ВЫЗОВ МЕНЮ ВЫБОРА ПРОНОЗА ПОГОДЫ"""
 @safe_execute
 @bot.message_handler(regexp=r"^(\📅 Прогноз погоды|/weatherforecast)$")
 def forecast_menu(message):
     """Выводит клавиатуру с выбором прогноза и передаёт ID сообщения дальше."""
-    delete_duplicate_command(message)
+    (message)
     if message.chat.id in last_menu_message:
         try:
             bot.delete_message(message.chat.id, last_menu_message[message.chat.id])
@@ -482,56 +500,81 @@ def toggle_notifications(call):
                          reply_markup=keyboard)
                          
 
-"""ОТКРЫТИЕ МЕНЮ ЕДИНИЦ ИЗМЕРЕНИЯ ДАННЫХ"""
+#ОТКРЫТИЕ МЕНЮ ЕДИНИЦ ИЗМЕРЕНИЯ ДАННЫХ
 @safe_execute
 def format_settings(param, reply_to=None):
     """Редактирует сообщение меню единиц измерения."""
     if isinstance(param, int):
         chat_id = param
-    else: 
+    else:
         chat_id = param.chat.id
         reply_to = param.message_id if reply_to is None else reply_to
+
+    if chat_id in last_user_command:
+        logging.debug(f"ID команды пользователя уже существует: {last_user_command[chat_id]} для чата {chat_id}. Перезапись не выполнена.")
+    else:
+        last_user_command[chat_id] = reply_to
+
+    menu_message_id = last_bot_message.get(chat_id)
+    if chat_id not in last_user_command:
+        last_user_command[chat_id] = reply_to
+        logging.debug(f"Сохранён новый ID команды пользователя: {reply_to} для чата {chat_id}")
+    else:
+        logging.debug(f"ID команды пользователя уже существует: {last_user_command[chat_id]} для чата {chat_id}. Перезапись не выполнена.")
 
     if chat_id in last_menu_message:
         try:
             bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id] 
+            del last_menu_message[chat_id]
         except Exception as e:
             logging.warning(f"Ошибка при удалении старого сообщения: {e}")
-    
+
     user = get_user(chat_id)
     if not user:
         logging.error(f"Ошибка: пользователь {chat_id} не найден в format_settings()")
         bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
         return
 
+    header = f"Сейчас ваши данные измеряются в следующих величинах:"
+    separator = "─" * min(len(header), 21)
     text = (
-        f"Сейчас ваши значения отображаются так:\n\n"
+        f"{header}\n"
+        f"{separator}\n"
         f"▸ Температура: {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
         f"▸ Давление: {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
-        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n\n"
-        f"Выберите параметр для изменения:"
+        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
+        f"{separator}\n"
+        f"Выберите параметр для изменения единиц измерения:"
     )
 
     try:
-        bot.edit_message_text(text, chat_id, reply_to, reply_markup=generate_format_keyboard())
-        last_menu_message[chat_id] = reply_to
+        if menu_message_id:
+            # Редактируем существующее сообщение
+            logging.debug(f"Редактируем сообщение меню: chat_id={chat_id}, message_id={menu_message_id}")
+            bot.edit_message_text(text, chat_id, menu_message_id, reply_markup=generate_format_keyboard())
+        else:
+            # Отправляем новое сообщение, если старое не найдено
+            raise KeyError("Меню для редактирования отсутствует. Отправляем новое сообщение.")
     except Exception as e:
-        logging.warning(f"Не удалось отредактировать сообщение: {e}")
-        msg = bot.send_message(chat_id, text, reply_markup=generate_format_keyboard())
-        last_menu_message[chat_id] = msg.message_id
+        logging.warning(f"Ошибка при редактировании сообщения: {e}. Отправляем новое сообщение.")
+        try:
+            msg = bot.send_message(chat_id, text, reply_markup=generate_format_keyboard(), reply_to_message_id=reply_to)
+            last_bot_message[chat_id] = msg.message_id
+            logging.debug(f"Новое сообщение меню отправлено: message_id={msg.message_id}")
+        except Exception as send_error:
+            logging.error(f"Ошибка при отправке нового сообщения: {send_error}")
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "format_settings")
 def format_settings_callback(call):
     """Обработчик кнопки 'Сохранить', возвращает в меню формата данных"""
-    chat_id = call.message.chat.id
     format_settings(call.message)
 
+#ФУНКЦИИ В РАЗРАБОТКЕ
 @safe_execute
 def feature_in_development(message):
     """Временный обработчик для уведомления о разработке"""
-    delete_duplicate_command(message)
+    (message)
     chat_id = message.chat.id
 
     if chat_id in last_menu_message:
@@ -559,6 +602,14 @@ def settings_back_to_main_menu(message):
             logging.warning(f"Ошибка при удалении старого сообщения: {e}")
     send_main_menu(chat_id)
 
+    if chat_id in last_settings_command:
+            try:
+                bot.delete_message(chat_id, last_settings_command[chat_id])
+                logging.debug(f"Удалено сообщение из last_settings_command: {last_settings_command[chat_id]} для чата {chat_id}")
+                del last_settings_command[chat_id]
+            except Exception as e:
+                logging.warning(f"Ошибка при удалении сообщения из last_settings_command: {e}")
+
     try:
         bot.delete_message(chat_id, message.message_id)
     except Exception as e:
@@ -568,7 +619,7 @@ def settings_back_to_main_menu(message):
 @bot.message_handler(func=lambda message: message.text == "🌦 Погодные данные")
 def weather_data_settings(message):
     """Обработчик кнопки 'Погодные данные' в настройках"""
-    delete_duplicate_command(message)
+    (message)
     user = get_user(message.from_user.id)
     chat_id = message.chat.id
 
@@ -578,14 +629,18 @@ def weather_data_settings(message):
             del last_menu_message[chat_id]
         except Exception as e:
             logging.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
+            
+    last_user_command[chat_id] = message.message_id
+    logging.debug(f"Сохранён ID команды: {message.message_id} для чата {chat_id}")
 
     if not user:
         bot.send_message(message.chat.id, "Ошибка: пользователь не найден.")
         return
 
-    text = "Выберите, какие данные показывать в прогнозе:"
+    text = "Выберите данные, которые вы хотите видеть при получении погоды:"
     keyboard = generate_weather_data_keyboard(user)
-    bot.send_message(message.chat.id, text, reply_markup=keyboard)
+    bot.send_message(chat_id, text, reply_markup=keyboard, reply_to_message_id=message.message_id)
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_weather_param_"))
@@ -594,20 +649,19 @@ def toggle_weather_param(call):
     chat_id = call.message.chat.id
     user = get_user(call.from_user.id)
     param = call.data.replace("toggle_weather_param_", "")
+    
     if not user:
         return  
 
-    current_params = set(user.tracked_weather_params.split(",")) if user.tracked_weather_params else set()
-
+    current_params = set(str(user.tracked_weather_params).split(",")) if user.tracked_weather_params else set()
     if param in current_params:
         current_params.remove(param)
     else:
         current_params.add(param)
 
     new_params_str = ",".join(current_params)
-
     if new_params_str == user.tracked_weather_params:
-        return 
+        return
 
     update_user(user.user_id, tracked_weather_params=new_params_str)
     user = get_user(call.from_user.id)
@@ -698,8 +752,10 @@ def change_unit_menu(call):
 
     bot.edit_message_text(f"Выберите единицу измерения {display_text}:", 
                           chat_id, call.message.message_id, 
-                          reply_markup=generate_unit_selection_keyboard(current_unit, unit_type))
+                          reply_markup=generate_unit_selection_keyboard(current_unit, unit_type)
+    )
 
+    last_bot_message[chat_id] = call.message.message_id
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
@@ -708,10 +764,8 @@ def set_unit(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
-    # Убираем префикс "set_"
-    data = call.data[len("set_"):]  # например, для wind_speed: "wind_speed_unit_m/s"
+    data = call.data[len("set_"):] 
     try:
-        # Разбиваем по разделителю "_unit_"
         unit_type, new_unit = data.split("_unit_", 1)
     except Exception as e:
         logging.error(f"Ошибка при разборе callback_data: {call.data}, {e}")
@@ -728,7 +782,6 @@ def set_unit(call):
     update_user_unit(user_id, unit_type, new_unit)
     logging.debug(f"Единицы {unit_type} изменены на {new_unit} для user_id={user_id}")
 
-    # Обновляем клавиатуру с галочкой у выбранной опции
     user = get_user(user_id)
     new_keyboard = generate_unit_selection_keyboard(getattr(user, f"{unit_type}_unit"), unit_type)
 
