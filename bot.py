@@ -21,7 +21,7 @@ load_dotenv()
 bot_start_time = time.time()
 rounded_time = datetime.fromtimestamp(round(bot_start_time), timezone.utc)
 
-# ЛОГИРОВАНИЕ
+#ЛОГИРОВАНИЕ
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 if not os.path.exists(LOG_DIR):
@@ -32,7 +32,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1, encoding="utf-8")
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024 * 1024, backupCount=1, encoding="utf-8")
 file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
 console_handler = logging.StreamHandler()
@@ -421,6 +421,7 @@ def notifications_settings(message):
 def forecast_menu(message):
     """Выводит клавиатуру с выбором прогноза и передаёт ID сообщения дальше."""
     (message)
+    chat_id = message.chat.id
     if message.chat.id in last_menu_message:
         try:
             bot.delete_message(message.chat.id, last_menu_message[message.chat.id])
@@ -428,6 +429,13 @@ def forecast_menu(message):
             logging.warning(f"Не удалось удалить сообщение: {e}")
 
     msg = bot.reply_to(message, "Выберите период прогноза:", reply_markup=generate_forecast_keyboard())
+
+    last_user_command[chat_id] = {
+        "message_id": message.message_id,
+        "command": message.text
+    }
+
+    last_menu_message[chat_id] = msg.message_id
 
     return msg.message_id
 
@@ -444,13 +452,14 @@ def back_to_forecast_menu(call):
     logging.debug(f"Последняя команда перед удалением: {last_user_command.get(chat_id)}")
 
     if chat_id in last_user_command:
-        last_command = last_user_command[chat_id]["command"]
-        if last_command == "📅 Прогноз погоды": 
+        last_command = last_user_command[chat_id].get("command")
+        if last_command == "📅 Прогноз погоды" or last_command == "/weatherforecast":
             try:
                 bot.delete_message(chat_id, last_user_command[chat_id]["message_id"])
                 del last_user_command[chat_id]
             except Exception as e:
-                logging.warning(f"Ошибка при удалении команды '📅 Прогноз погоды': {e}")
+                logging.warning(f"Ошибка при удалении команды: {e}")
+
     send_main_menu(chat_id)
 
 @safe_execute
