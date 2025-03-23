@@ -8,6 +8,7 @@ from datetime import date, timedelta, datetime
 import os
 import logging
 import importlib
+import json
 
 #СЛОВАРИ
 UNIT_TRANSLATIONS = {
@@ -173,9 +174,9 @@ def safe_execute(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            user_id = args[0].from_user.id if args else None
-            logging.error(f"Ошибка при выполнении {func.__name__} для пользователя с ID {user_id}: {str(e)}")
-            if user_id:
+            logging.error(f"Ошибка в функции {func.__name__}: {str(e)} | Аргументы: {args}, {kwargs}")
+
+            if args and hasattr(args[0], "chat"):
                 bot.reply_to(args[0],
                              "Упс.. Похоже произошли небольшие технические шоколадки.\n"
                              "Попробуйте позже ~o~")
@@ -198,7 +199,7 @@ def log_action(action, message):
 
 #КЛАВИАТУРЫ
 def generate_forecast_keyboard():
-    """ПРОГНОЗ ПОГОДЫ"""
+    """Создает клавиатуру для сообщения с меню прогноза погоды"""
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
     keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
@@ -226,12 +227,12 @@ def generate_weather_data_keyboard(user):
         "visibility": "Видимость"
     }
 
-    selected_params = user.tracked_weather_params.split(",") if user.tracked_weather_params else []
+    tracked_params = decode_tracked_params(user.tracked_weather_params)
     keyboard = types.InlineKeyboardMarkup()
 
     for key, label in options.items():
-        icon = " ✅" if key in selected_params else ""
-        keyboard.add(types.InlineKeyboardButton(f"{label}{icon}", callback_data=f"toggle_weather_param_{key}"))
+        icon = "✅" if tracked_params.get(key, False) else ""
+        keyboard.add(types.InlineKeyboardButton(f"{icon} {label}", callback_data=f"toggle_weather_param_{key}"))
 
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
     return keyboard
@@ -253,8 +254,11 @@ def generate_unit_selection_keyboard(current_value, unit_type):
     return keyboard
 
 def format_weather_data(data, user):
-    """Форматирует погодные данные с учётом единиц измерения и настроек пользователя"""
-    tracked_params = set(user.tracked_weather_params.split(",")) if user.tracked_weather_params else set()
+    """
+    Форматирует погодные данные с учётом единиц измерения и настроек пользователя.
+    Автоматически декодирует JSON из tracked_weather_params.
+    """
+    tracked_params = decode_tracked_params(user.tracked_weather_params)
 
     temperature = convert_temperature(data["temp"], user.temp_unit)
     pressure = convert_pressure(data["pressure"], user.pressure_unit)
@@ -284,11 +288,41 @@ def format_weather_data(data, user):
     }
 
     for param, (label, value) in params.items():
-        if param in tracked_params:
+        if tracked_params.get(param, False): 
             logging.debug(f"Добавление параметра: {param} - {label}: {value}")
             weather_text += f"▸ {label}: {value}\n"
 
     return weather_text + "\n      ⟪ Deus Weather ⟫"
+
+def decode_tracked_params(tracked_params):
+    """
+    Декодирует JSON-строку или возвращает объект как есть, если он уже является словарём.
+    Если входные данные некорректны, возвращает значения по умолчанию.
+
+    :param tracked_params: JSON-строка или словарь.
+    :return: Декодированный словарь.
+    """
+    default_params = {
+        "description": True,
+        "temperature": True,
+        "humidity": True,
+        "precipitation": True,
+        "pressure": True,
+        "wind_speed": True,
+        "visibility": True
+    }
+
+    if isinstance(tracked_params, str):
+        try:
+            return json.loads(tracked_params)
+        except json.JSONDecodeError:
+            logging.warning("❌ Ошибка декодирования JSON. Используем значения по умолчанию.")
+            return default_params
+    elif isinstance(tracked_params, dict):
+        return tracked_params
+    else:
+        logging.warning("❌ Некорректный формат tracked_params. Используем значения по умолчанию.")
+        return default_params
 
 def format_change(label, old_value, new_value, unit=""):
     """Форматирует изменения данных, добавляя стрелки при изменении значений."""
@@ -312,21 +346,33 @@ def is_valid_command(text):
 def extract_weather_data(entry):
     """Извлекает погодные данные из записи API"""
     temp = entry["main"]["temp"]
-    return {
+    temp_min = entry["main"].get("temp_min", temp)
+    temp_max = entry["main"].get("temp_max", temp)
+    humidity = entry["main"].get("humidity", None)
+    visibility = entry.get("visibility", None)
+    pressure = entry["main"].get("pressure", None)
+    wind_speed = entry["wind"].get("speed", None)
+    description = entry["weather"][0]["description"].capitalize()
+    precipitation = entry.get("pop", None)
+
+    weather_data = {
         "temp": temp,
-        "temp_min": entry["main"].get("temp_min", temp),
-        "temp_max": entry["main"].get("temp_max", temp),
-        "humidity": entry["main"].get("humidity", None),
-        "visibility": entry.get("visibility", None),
-        "pressure": entry["main"]["pressure"],
-        "wind_speed": entry["wind"]["speed"],
-        "description": entry["weather"][0]["description"].capitalize(),
-        "precipitation": round(entry.get("pop", 0) * 100)
+        "temp_min": temp_min,
+        "temp_max": temp_max,
+        "humidity": humidity,
+        "visibility": visibility,
+        "pressure": pressure,
+        "wind_speed": wind_speed,
+        "description": description,
+        "precipitation": round(precipitation * 100) if precipitation is not None else None
     }
+
+    logging.debug(f"Извлечённые погодные данные: {weather_data}")
+    return weather_data
 
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
 def get_today_forecast(city, user):
-    """Прогноз погоды на сегодня"""
+    """Прогноз погоды на сегодня с учётом tracked_weather_params"""
     raw_data = fetch_today_forecast(city)
     if not raw_data:
         return None  
@@ -342,16 +388,32 @@ def get_today_forecast(city, user):
         return None  
 
     weather_data = extract_weather_data(today_data)
-    weather_data.update({
+
+    tracked_params = decode_tracked_params(user.tracked_weather_params)
+    filtered_weather_data = {}
+
+    for key, value in weather_data.items():
+        if tracked_params.get(key, False) and value is not None:
+            filtered_weather_data[key] = value
+        else:
+            logging.debug(f"Ключ {key} исключён из данных прогноза: {value}")
+            
+    temp_min = weather_data.get("temp_min", weather_data["temp"])
+    temp_max = weather_data.get("temp_max", weather_data["temp"])
+    filtered_weather_data["temp_min"] = min(filtered_weather_data.get("temp_min", float("inf")), temp_min)
+    filtered_weather_data["temp_max"] = max(filtered_weather_data.get("temp_max", float("-inf")), temp_max)
+
+    filtered_weather_data.update({
         "date": date_formatted,
         "day_name": day_name
     })
 
-    return weather_data
+    logging.debug(f"Сформированный прогноз на сегодня: {filtered_weather_data}")
+    return filtered_weather_data
 
 
 def get_weekly_forecast(city, user):
-    """Прогноз погоды на неделю"""
+    """Прогноз погоды на неделю с учётом tracked_weather_params"""
     raw_data = fetch_weekly_forecast(city)
     if not raw_data:
         return None  
@@ -359,6 +421,8 @@ def get_weekly_forecast(city, user):
     daily_data = {}
     today = date.today()
     start_date = today + timedelta(days=1)
+
+    tracked_params = decode_tracked_params(user.tracked_weather_params)
 
     for entry in raw_data:
         timestamp = entry["dt"] 
@@ -373,15 +437,18 @@ def get_weekly_forecast(city, user):
             continue
 
         weather_data = extract_weather_data(entry)
+        filtered_weather_data = {
+            key: value for key, value in weather_data.items() if key in tracked_params and tracked_params[key]
+        }
 
         if date_obj not in daily_data:
             daily_data[date_obj] = {
                 "day_name": day_name,
-                **weather_data
+                **filtered_weather_data
             }
 
-        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj]["temp_min"], weather_data["temp"])
-        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj]["temp_max"], weather_data["temp"])
+        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj].get("temp_min", float("inf")), weather_data["temp"])
+        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj].get("temp_max", float("-inf")), weather_data["temp"])
 
     return [
         {
