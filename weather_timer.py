@@ -11,12 +11,13 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from functools import wraps
 from models import CheckedCities, User, Base
-from logic import safe_execute, format_weather_data, format_change, convert_pressure, convert_precipitation_to_percent, convert_temperature, convert_wind_speed
+from logic import safe_execute, format_weather_data, format_change, convert_pressure, convert_precipitation_to_percent, convert_temperature, convert_wind_speed, decode_tracked_params, UNIT_TRANSLATIONS
 from weather import get_weather
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine    
 from threading import Event
 from logging.handlers import RotatingFileHandler
+from bot import last_menu_message, menu_option, last_settings_command, settings_option
 
 #ПЕРЕМЕННЫЕ
 old_start_time = None
@@ -87,16 +88,24 @@ def check_weather_changes(city, current_data):
     
     db = SessionLocal()
     try:
-        # Получаем всех пользователей, у которых включены уведомления для данного города
+        if TEST:
+            timer_logger.info(f"⚡ [ТЕСТ] Эмулируем погоду для {city}")
+            current_data = {
+                "temp": round(random.uniform(-10, 35), 1),
+                "humidity": random.randint(10, 100),
+                "wind_speed": round(random.uniform(0, 20), 1),
+                "pressure": random.randint(950, 1050),
+                "visibility": random.randint(1000, 10000),
+                "description": random.choice(["Солнечно", "Дождь", "Облачно", "Гроза"])
+            }
+
         users = db.query(User).filter(User.preferred_city == city, User.notifications_enabled == True).all()
         if not users:
             timer_logger.info(f"❌ Уведомления для города {city} отключены. Проверка завершена.")
-            return True  # Возвращаем True, чтобы город считался проверенным
+            return True  
 
-        # Получаем данные о городе из БД
         city_data = db.query(CheckedCities).filter_by(city_name=city).first()
 
-        # Если данных о городе нет, создаём новую запись
         if not city_data:
             timer_logger.warning(f"⚠️ В базе нет данных о {city}, записываем первые значения.")
             timer_logger.debug(f"📊 Данные, которые будем записывать в БД для {city}: {current_data}")
@@ -119,50 +128,43 @@ def check_weather_changes(city, current_data):
             db.add(new_entry)
             db.commit()
             timer_logger.info(f"✅ Данные о городе {city} успешно записаны в БД.")
-            return True  # Город проверен, данные добавлены
+            return True 
 
-        # Сравниваем текущие данные с последними сохранёнными
         notify_users = False
         changed_params = {}
 
         for user in users:
-            # Загружаем параметры, которые пользователь отслеживает
             if isinstance(user.tracked_weather_params, str):
                 try:
                     tracked_params = json.loads(user.tracked_weather_params)
                 except json.JSONDecodeError as e:
-                    timer_logger.error(f"❌ Ошибка парсинга JSON в tracked_weather_params для пользователя {user.user_id}: {e}")
+                    timer_logger.error(f"✦ Ошибка парсинга JSON в tracked_weather_params для пользователя {user.user_id}: {e}")
                     continue
             else:
                 tracked_params = user.tracked_weather_params
 
-            # Сравниваем параметры
             for param in tracked_params:
-                if param in ["description"]:  # Пропускаем строковые параметры
+                if param in ["description"]:  
                     continue
 
                 if param in current_data:
                     old_value = getattr(city_data, f"last_{param}", None)
                     new_value = current_data[param]
 
-                    # Преобразуем значения в числа
                     try:
                         old_value = float(old_value) if old_value is not None else None
                         new_value = float(new_value)
                     except ValueError as e:
-                        timer_logger.error(f"❌ Невозможно преобразовать параметр {param} в число: {e}")
+                        timer_logger.error(f"✦ Невозможно преобразовать параметр {param} в число: {e}")
                         continue
 
-                    # Проверяем, превысило ли изменение порог
                     if old_value is not None and abs(new_value - old_value) > get_threshold(param):
                         changed_params[param] = (old_value, new_value)
                         notify_users = True
 
-        # Если есть изменения, отправляем уведомления
         if notify_users:
-            send_weather_update(users, city, changed_params)
+            send_weather_update(users, city, changed_params, current_data)
 
-        # Обновляем данные о городе в БД
         city_data.last_temperature = current_data["temp"]
         city_data.last_wind_speed = current_data["wind_speed"]
         city_data.last_humidity = current_data["humidity"]
@@ -172,16 +174,16 @@ def check_weather_changes(city, current_data):
 
         db.commit()
         timer_logger.info(f"✅ Данные о городе {city} обновлены.")
-        return True  # Проверка завершена успешно
+        return True 
 
     except Exception as e:
         db.rollback()
-        timer_logger.error(f"❌ Ошибка при обработке города {city}: {e}")
-        return False  # Возвращаем False в случае ошибки
+        timer_logger.error(f"✦ Ошибка при обработке города {city}: {e}")
+        return False
 
     finally:
         db.close()
-        timer_logger.debug(f"📌 Соединение с БД для города {city} закрыто.")
+        timer_logger.debug(f"▸ Соединение с БД для города {city} закрыто.")
 
 def get_threshold(param):
     """Возвращает порог изменения для уведомления"""
@@ -190,35 +192,150 @@ def get_threshold(param):
         "humidity": 10,  # Изменение влажности на 10%
         "wind_speed": 2,  # Изменение скорости ветра на 2 м/с
         "pressure": 5,  # Изменение давления на 5 мм рт. ст.
-        "visibility": 500  # Изменение видимости на 500 м
+        "visibility": 1500  # Изменение видимости на 500 м
     }
     return thresholds.get(param, 0)
 
-def send_weather_update(users, city, changes):
-    """Отправляет уведомления пользователям о значительных изменениях в погоде"""
+def send_weather_update(users, city, changes, current_data):
+    """Отправляет уведомления пользователям о погоде, исключая отключённые параметры, но сохраняя неизменённые."""
     for user in users:
-        message = f"🌤 Погода в {city} изменилась:\n"
-        
-        for param, (old, new) in changes.items():
-            if param == "temperature":
-                converted_old = convert_temperature(old, user.temp_unit)
-                converted_new = convert_temperature(new, user.temp_unit)
-                unit = user.temp_unit
-            elif param == "pressure":
-                converted_old = convert_pressure(old, user.pressure_unit)
-                converted_new = convert_pressure(new, user.pressure_unit)
-                unit = user.pressure_unit
-            elif param == "wind_speed":
-                converted_old = convert_wind_speed(old, user.wind_speed_unit)
-                converted_new = convert_wind_speed(new, user.wind_speed_unit)
-                unit = user.wind_speed_unit
-            else:
-                converted_old, converted_new, unit = old, new, ""
+        tracked_params = decode_tracked_params(user.tracked_weather_params)
 
-            message += f"🔹 {param}: {converted_old} → {converted_new} {unit}\n"
+        if not any(tracked_params.values()):
+            timer_logger.info(f"🚫 Уведомление не отправлено пользователю {user.user_id} — все параметры отключены.")
+            continue
+        chat_id = user.user_id
+
+        # Удаляем предыдущее декоративное сообщение (если оно есть)
+        if chat_id in last_menu_message:
+            try:
+                bot.delete_message(chat_id, last_menu_message[chat_id])
+                del last_menu_message[chat_id]
+                timer_logger.debug(f"🗑 Удалено старое декоративное сообщение для пользователя {chat_id}.")
+            except Exception as e:
+                timer_logger.warning(f"⚠ Не удалось удалить декоративное сообщение для {chat_id}: {e}")
+
+        def get_weather_emoji(current_data, changes):
+            """Выбирает наиболее важный смайлик в зависимости от изменений погоды."""
+
+            # Таблица приоритетов смайликов (чем выше число, тем важнее)
+            priority = {
+                "storm": (5, "⛈️"),  # Гроза, буря
+                "hurricane_wind": (5, "🌪️"),  # Ураганный ветер (15+ м/с)
+                "extreme_heat": (5, "🔥"),  # Очень жарко (30+°C)
+                "extreme_cold": (5, "❄️"),  # Очень холодно (-15°C)
+                "pressure_drop": (5, "‼️"),  # Резкое падение давления
+
+                "strong_wind": (4, "💨"),  # Сильный ветер (10-15 м/с)
+                "heavy_rain": (4, "☔"),  # Ливень
+                "big_temp_change": (4, "🌡️"),  # Резкий скачок температуры (±10°C)
+                "low_visibility": (4, "🌫️"),  # Сильный туман
+
+                "cloudy": (3, "🌦️"),  # Переменная облачность
+                "humidity_increase": (2, "💧"),  # Повышенная влажность (80+%)
+                "small_pressure_change": (2, "📉"),  # Незначительное изменение давления
+            }
+
+            detected_events = []
+
+            if "wind_speed" in changes:
+                old, new = changes["wind_speed"]
+                if new >= 15:
+                    detected_events.append("hurricane_wind")
+                elif new >= 10:
+                    detected_events.append("strong_wind")
+
+            if "temp" in changes:
+                old, new = changes["temp"]
+                diff = abs(new - old)
+                if new >= 30:
+                    detected_events.append("extreme_heat")
+                elif new <= -15:
+                    detected_events.append("extreme_cold")
+                elif diff >= 10:
+                    detected_events.append("big_temp_change")
+
+            if "pressure" in changes:
+                old, new = changes["pressure"]
+                if abs(new - old) > 15:
+                    detected_events.append("pressure_drop")
+                elif abs(new - old) > 5:
+                    detected_events.append("small_pressure_change")
+
+            if "description" in current_data:
+                description = current_data["description"].lower()
+                if "гроза" in description or "буря" in description:
+                    detected_events.append("storm")
+                if "дождь" in description and "ливень" in description:
+                    detected_events.append("heavy_rain")
+
+            if "visibility" in changes:
+                old, new = changes["visibility"]
+                if new < 1000:
+                    detected_events.append("low_visibility")
+
+            # Выбираем самый приоритетный смайлик
+            if detected_events:
+                highest_priority_event = max(detected_events, key=lambda event: priority[event][0])
+                return priority[highest_priority_event][1]
+
+            return "🌦️"  # Обычные изменения
         
-        bot.send_message(user.user_id, message)
-        timer_logger.info(f"📩 Уведомление отправлено пользователю {user.user_id}: {message}")
+        # Заголовок
+        emoji = get_weather_emoji(current_data, changes)
+        header = f"<blockquote>{emoji} Внимание!⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀</blockquote>\nПогода в г.{city} изменилась!"
+        line = "─" * min(len(header), 21)
+        message = f"<b>{header}</b>\n{line}\n"
+
+        params = {
+            "description": ("Погода", current_data["description"], ""),
+            "temperature": ("Температура", convert_temperature(current_data["temp"], user.temp_unit), UNIT_TRANSLATIONS["temp"].get(user.temp_unit, "°C")),
+            "humidity": ("Влажность", int(current_data["humidity"]), "%"),
+            "precipitation": ("Вероятность осадков", int(current_data.get("precipitation", 0)), "%"),
+            "pressure": ("Давление", convert_pressure(current_data["pressure"], user.pressure_unit), UNIT_TRANSLATIONS["pressure"].get(user.pressure_unit, " мм рт. ст.")),
+            "wind_speed": ("Скорость ветра", convert_wind_speed(current_data["wind_speed"], user.wind_speed_unit), UNIT_TRANSLATIONS["wind_speed"].get(user.wind_speed_unit, " м/с")),
+            "visibility": ("Видимость", int(current_data["visibility"]), "м")
+        }
+
+        for param, (label, value, unit) in params.items():
+            if not tracked_params.get(param, False):
+                continue
+
+            arrow = "▸" 
+            value_str = f"{value}{unit}" 
+
+            if param in changes:  
+                old, new = changes[param]
+                trend_emoji = "⇑" if new > old else "⇓"
+
+                if param == "temperature":
+                    old = convert_temperature(old, user.temp_unit)
+                    new = convert_temperature(new, user.temp_unit)
+                elif param == "pressure":
+                    old = convert_pressure(old, user.pressure_unit)
+                    new = convert_pressure(new, user.pressure_unit)
+                elif param == "wind_speed":
+                    old = convert_wind_speed(old, user.wind_speed_unit)
+                    new = convert_wind_speed(new, user.wind_speed_unit)
+                elif param in ["humidity", "visibility"]:
+                    old, new = int(old), int(new)
+
+                value_str = f"{old} {unit} ➝ {new} {unit}"
+                arrow = trend_emoji
+
+            message += f"{arrow} {label}: {value_str}\n"
+
+        message += "\n      ⟪ Deus Weather ⟫"
+
+        bot.send_message(user.user_id, message, parse_mode="HTML")
+        timer_logger.info(f"▸ Уведомление отправлено пользователю {user.user_id}: {message}\n")
+
+        if chat_id in last_settings_command:
+            last_menu_message[chat_id] = settings_option(chat_id)
+            timer_logger.debug(f"🔄 Повторно отправлено меню настроек для пользователя {chat_id}.")
+        else:
+            last_menu_message[chat_id] = menu_option(chat_id)
+            timer_logger.debug(f"🔄 Повторно отправлено главное меню для пользователя {chat_id}.")
 
 @safe_execute
 def check_all_cities():
@@ -243,7 +360,7 @@ def check_all_cities():
 
                 if success:
                     checked_cities.add(city)  
-                    timer_logger.info(f"✅ {city} добавлен в проверенные города.")
+                    timer_logger.info(f"✅ {city} добавлен в проверенные города.\n")
 
         attempt += 1  
 
@@ -254,27 +371,27 @@ def check_all_cities():
 
 #ТАЙМЕР ЧЕКЕРА
 def should_run_check():
-    global old_start_time, last_start_time
-    last_start_time = time.time()
-
-    first_run = old_start_time is None
-
-    if first_run:
-        timer_logger.info("🚀 Первая проверка после запуска.")
-        old_start_time = last_start_time  
-        return True, 0  
+    global old_start_time
 
     now = datetime.now(timezone.utc)
-    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    next_hour = current_hour + timedelta(hours=1)
     remaining_time = (next_hour - now).total_seconds()
 
-    if remaining_time <= 0:  
-        timer_logger.info("🕒 Наступил новый час, запускаем проверку погоды.")
-        old_start_time = last_start_time
-        return True, 0  
-    else:
-        timer_logger.info(f"⏳ Следующая проверка в {next_hour.strftime('%H:%M:%S UTC')}, через {remaining_time:.2f} сек.")
-        return False, remaining_time
+    test_interval = 30 if TEST else 3600  
+
+    if old_start_time is None:
+        timer_logger.info("🚀 Первая проверка после запуска.")
+        old_start_time = current_hour.timestamp() 
+        return True, 0
+
+    if time.time() - old_start_time < test_interval:
+        timer_logger.info(f"⏳ Следующая проверка через {remaining_time:.2f} сек.")
+        return False, min(test_interval, remaining_time)
+
+    timer_logger.info("🕒 Наступил новый час, запускаем проверку погоды.")
+    old_start_time = current_hour.timestamp()  
+    return True, 0
 
 if __name__ == '__main__':
     while True:
