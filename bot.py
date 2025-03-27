@@ -61,19 +61,11 @@ bot_logger.info("✅ Логирование для бота настроено!"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-#СЛОВАРИ
-last_menu_message = {}
-"""Последнее декоративное сообщение"""
-last_user_command = {}
-"""Последняя команда пользователя"""
-last_settings_command = {}
-"""ID команды с меню настроек"""
-last_bot_message = {}
-"""Последнее сообщение бота"""
 
 def track_bot_message(message):
     """Запоминает последнее отправленное сообщение от бота."""
-    last_bot_message[message.chat.id] = message.message_id
+    update_data_field("last_bot_message", message.chat.id, message.message_id)
+
 
 #ОБРАБОТЧИКИ
 @bot.message_handler(func=lambda message: not message.text.startswith("/") and message.text not in menu_actions)
@@ -83,11 +75,9 @@ def handle_all_messages(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     active_sessions[user_id] = chat_id 
-
     if message.date < bot_start_time:
         bot_logger.debug("🔴 Сообщение проигнорировано (старше времени запуска).")
         return
-    
     if is_valid_command(message.text):  
         if message.text in menu_actions:
             menu_actions[message.text](message)
@@ -95,50 +85,71 @@ def handle_all_messages(message):
         bot.send_message(chat_id, "Я вас не понял. Используйте команды меню!")
         send_main_menu(message.chat.id)
 
+
 """ОТПРАВКА МЕНЮ"""
 def send_menu(user_id, text, buttons):
     chat_id = active_sessions.get(user_id)
     if not chat_id:
         bot_logger.error(f"Ошибка: нет активного chat_id для user_id {user_id}")
         return
-
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for row in buttons:
         keyboard.row(*row)
-
     bot.send_message(chat_id, text, reply_markup=keyboard)
 
+
 def menu_option(chat_id, reply_markup=None):
-    """Отправка декоративного сообщения при взаимодействии с главным меню"""
-    menu_opt = bot.send_message(chat_id, "Выберите опцию:", reply_markup=reply_markup)
-    last_menu_message[chat_id] = menu_opt.message_id
-    return menu_opt.message_id
+    """Отправка декоративного сообщения при взаимодействии с главным меню."""
+    menu_message = bot.send_message(chat_id, "Выберите опцию:", reply_markup=reply_markup)
+    update_data_field("last_menu_message", chat_id, menu_message.message_id)
+    return menu_message.message_id
+
 
 def settings_option(chat_id, reply_markup=None):
-    """Отправка декоративного сообщения при взаимодействии с меню настроек"""
+    """Отправка декоративного сообщения при взаимодействии с меню настроек."""
     settings_opt = bot.send_message(chat_id, "Выберите настройку:", reply_markup=reply_markup)
-    last_menu_message[chat_id] = settings_opt.message_id
+    update_data_field("last_menu_message", chat_id, settings_opt.message_id)
     return settings_opt.message_id
 
+
+def send_loading_message(chat_id):
+    """Отправляет сообщение о загрузке и сразу его удаляет."""
+    loading_message = bot.send_message(chat_id, "Загрузка...")
+    bot.delete_message(chat_id, loading_message.message_id)
+
+
 def send_main_menu(chat_id):
+    """Отправка главного меню пользователю."""
+    delete_last_menu_message(chat_id)
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     main_keyboard.row("🌎 Узнать погоду", "📅 Прогноз погоды")
     main_keyboard.row("👥 Друзья", "🎭 Профиль")
     main_keyboard.row("⚙️ Настройки")
-    loading_message = bot.send_message(chat_id, "Загрузка...")
-    bot.delete_message(chat_id, loading_message.message_id)
+    send_loading_message(chat_id)
     menu_option(chat_id, reply_markup=main_keyboard)
 
+
 def send_settings_menu(chat_id):
-    """Вывод клавиатуры с меню настроек по команде пользователя"""
+    """Отправка клавиатуры с меню настроек пользователю."""
+    delete_last_menu_message(chat_id)
     settings_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    settings_keyboard.row("🏙 Изменить город","🔔 Уведомления")
+    settings_keyboard.row("🏙 Изменить город", "🔔 Уведомления")
     settings_keyboard.row("🌦 Погодные данные", "📏 Единицы измерения")
     settings_keyboard.row("↩ Назад")
-
-    loading_message = bot.send_message(chat_id, "Загрузка...")
-    bot.delete_message(chat_id, loading_message.message_id)
+    send_loading_message(chat_id)
     settings_option(chat_id, reply_markup=settings_keyboard)
+
+
+def delete_last_menu_message(chat_id):
+    """Удаляет последнее декоративное сообщение для чата."""
+    message_id = get_data_field("last_menu_message", chat_id)
+    if message_id:
+        try:
+            bot.delete_message(chat_id, message_id)
+            update_data_field("last_menu_message", chat_id, None)
+        except Exception as e:
+            bot_logger.warning(f"Ошибка при удалении меню-сообщения {message_id} для чата {chat_id}: {e}")
+
 
 # ОБРАБОТЧИК ПРОГНОЗОВ ПОГОДЫ (СЕГОДНЯ/НЕДЕЛЯ)
 @safe_execute
@@ -148,22 +159,16 @@ def forecast_handler(call):
     chat_id = call.message.chat.id
     user = get_user(call.from_user.id)
     menu_message_id = call.message.message_id
-
     if not user or not user.preferred_city:
         bot.send_message(chat_id, "⚠ Сначала укажите ваш город в настройках!")
         return
-
-    # Получаем прогноз
-    if call.data == "forecast_today":
-        forecast_data = [get_today_forecast(user.preferred_city, user)]
-    else:
-        forecast_data = get_weekly_forecast(user.preferred_city, user)
-
+    forecast_data = (
+        [get_today_forecast(user.preferred_city, user)] if call.data == "forecast_today"
+        else get_weekly_forecast(user.preferred_city, user)
+    )
     if not forecast_data or None in forecast_data:
         bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
-
-    # Форматирование прогноза
     try:
         forecast_text = "\n\n".join([format_forecast(day, user) for day in forecast_data]) + "\n\n      ⟪ Deus Weather ⟫"
     except KeyError as e:
@@ -171,16 +176,22 @@ def forecast_handler(call):
         bot.send_message(chat_id, "⚠ Произошла ошибка при обработке прогноза.")
         send_main_menu(chat_id)
         return
-
-    # Отправляем прогноз пользователю
     try:
-        bot.edit_message_text(forecast_text, chat_id, menu_message_id, parse_mode="HTML")
+        bot.edit_message_text(
+            forecast_text,
+            chat_id,
+            menu_message_id,
+            parse_mode="HTML",
+            reply_markup=None
+        )
+        update_data_field("last_bot_message", chat_id, None)
+        bot_logger.debug(f"Прогноз погоды успешно отправлен в чат {chat_id}.")
     except Exception as e:
         bot_logger.warning(f"⚠ Не удалось отредактировать сообщение: {str(e)}")
-        bot.send_message(chat_id, forecast_text, parse_mode="HTML")
-
-    # Возвращаем главное меню
+        msg = bot.send_message(chat_id, forecast_text, parse_mode="HTML")
+        update_data_field("last_bot_message", chat_id, msg.message_id)
     send_main_menu(chat_id)
+
 
 # Форматирование прогноза
 def format_forecast(day, user):
@@ -219,11 +230,13 @@ def format_forecast(day, user):
             f"▸ Скорость ветра: {round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit))} "
             f"{UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"
         )
-
+    
+    #УБРАЛ ВИДИМОСТЬ ДЛЯ НЕДЕЛЬНОГО ПРОГНОЗА. ПОКА ЧТО КАК БУДТО НЕ ИМЕЕТ СМЫСЛА
     # if tracked_params.get("visibility", False) and "visibility" in day:
     #     parts.append(f"▸ Видимость: {day['visibility']} м")
 
     return "\n".join(parts)
+
 
 #НАВИГАЦИОННЫЕ ОБРАБОТЧИКИ
 @safe_execute
@@ -231,47 +244,30 @@ def format_forecast(day, user):
 def back_to_settings_callback(call):
     """Обработчик возврата в меню настроек"""
     chat_id = call.message.chat.id
-
     try:
         bot.delete_message(chat_id, call.message.message_id)
     except Exception as e:
         bot_logger.warning(f"Ошибка при удалении сообщения с кнопкой 'Назад': {e}")
-
-    if chat_id in last_user_command:
-        message_id = last_user_command[chat_id]
+    last_command_message = get_data_field("last_user_command", chat_id)
+    if last_command_message:
         try:
-            bot.delete_message(chat_id, message_id)
-            del last_user_command[chat_id]
-            bot_logger.debug(f"Удалено сообщение команды: {message_id}")
+            bot.delete_message(chat_id, last_command_message)
+            update_data_field("last_user_command", chat_id, None)
+            bot_logger.debug(f"Удалено сообщение команды: {last_command_message}")
         except Exception as e:
             bot_logger.warning(f"Ошибка при удалении сообщения команды: {e}")
-
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении декоративного сообщения: {e}")
-
+    delete_last_menu_message(chat_id)
     send_settings_menu(chat_id)
+
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "⚙️ Настройки")
 def settings_menu_handler(message):
-    """Обработчик вызова меню настроек через сообщение"""
-    (message)
+    """Обработчик вызова меню настроек через сообщение."""
     chat_id = message.chat.id
-
-    last_settings_command[chat_id] = message.message_id
+    update_data_field("last_settings_command", chat_id, message.message_id)
     bot_logger.debug(f"Сохранён ID команды 'Настройки': {message.message_id} для чата {chat_id}")
-
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id] 
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении старого сообщения: {e}")
-
+    delete_last_menu_message(chat_id)
     send_settings_menu(chat_id)
 
 
@@ -280,24 +276,21 @@ def settings_menu_handler(message):
 def back_to_main_callback(call):
     """Обработчик возврата в главное меню"""
     chat_id = call.message.chat.id
-    bot.delete_message(chat_id, call.message.message_id)
-
-    if chat_id in last_user_command:
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception as e:
+        bot_logger.warning(f"Ошибка при удалении сообщения с кнопкой 'Назад': {e}")
+    last_command_message = get_data_field("last_user_command", chat_id)
+    if last_command_message:
         try:
-            bot.delete_message(chat_id, last_user_command[chat_id])
-            bot_logger.debug(f"Удалено сообщение команды: {last_user_command[chat_id]} для чата {chat_id}")
-            del last_user_command[chat_id]
+            bot.delete_message(chat_id, last_command_message)
+            update_data_field("last_user_command", chat_id, None)
+            bot_logger.debug(f"Удалено сообщение команды: {last_command_message} для чата {chat_id}")
         except Exception as e:
             bot_logger.warning(f"Ошибка при удалении сообщения команды: {e}")
-
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id] 
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
-
+    delete_last_menu_message(chat_id)
     send_main_menu(chat_id)
+
 
 #КОМАНДЫ
 #ОБРАБОТКА /start
@@ -307,19 +300,22 @@ def start(message):
     log_action("Получена команда /start", message)
     user_id = message.from_user.id
     user = get_user(user_id)
-
+    chat_id = message.chat.id
+    delete_last_menu_message(chat_id)
     if user and user.preferred_city:
         back_reply_text = (f"С возвращением, {message.from_user.first_name}!\n"
                       f"Ваш основной город — {user.preferred_city}.")
-        bot.reply_to(message, back_reply_text)
+        msg = bot.reply_to(message, back_reply_text)  
+        update_data_field("last_bot_message", chat_id, msg.message_id)
         bot_logger.debug(f"Пользователь с ID {user_id} уже зарегистрирован.")
         send_main_menu(message.chat.id)
     else:
         save_user(user_id, message.from_user.first_name)
         new_reply_text = (f"Привет, {message.from_user.first_name}!\n"
-                      "Для того, чтобы начать получать информацию о погоде — укажите свой город.")
+                      "Чтобы начать пользоваться ботом — введите свой город.")
         msg = bot.reply_to(message, new_reply_text)
-        bot.register_next_step_handler(msg, lambda m: process_new_city(m, show_menu=True)) 
+        update_data_field("last_bot_message", chat_id, msg.message_id)
+        bot.register_next_step_handler(msg, process_new_city_registration) 
         bot_logger.debug(f"Новый пользователь {user_id}. Запрошен город.")
 
 
@@ -336,22 +332,14 @@ def weather(message):
         reply = bot.reply_to(message, "Для начала укажите свой город!")
         bot.register_next_step_handler(reply, process_new_city)
         return
-    
-    if message.chat.id in last_menu_message:
-        try:
-            bot.delete_message(message.chat.id, last_menu_message[message.chat.id])
-        except Exception as e:
-            bot_logger.warning(f"Не удалось удалить сообщение: {e}")
-
+    delete_last_menu_message(message.chat.id)
     weather_data = get_weather(user.preferred_city)
     bot_logger.debug(f"Данные погоды для {user.preferred_city}: {weather_data}")
     if not weather_data:
         bot.reply_to(message, "Не удалось получить данные о погоде.")
         send_main_menu(message.chat.id)
         return
-    
     weather_info = format_weather_data(weather_data, user)
-
     bot.reply_to(message, weather_info, parse_mode="HTML")
     send_main_menu(message.chat.id)
 
@@ -364,28 +352,16 @@ def changecity(message):
     user_id = message.from_user.id
     user = get_user(user_id)
     chat_id = message.chat.id
-    
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
-
+    delete_last_menu_message(chat_id)
     reply_text = (f"▸ Ваш текущий город — {user.preferred_city}. \n\nВведите название нового города для обновления!"
                   if user and user.preferred_city else
                   "Вы ещё не указали свой город! \nУкажите новый город.")
-
     keyboard = types.InlineKeyboardMarkup()
     cancel_button = types.InlineKeyboardButton("✖ Отмена", callback_data="cancel_changecity")
     keyboard.add(cancel_button)
-
     reply = bot.reply_to(message, reply_text, reply_markup=keyboard)
-
-    last_menu_message[chat_id] = reply.message_id
-
-    last_user_command[chat_id] = message.message_id
-
+    update_data_field("last_menu_message", chat_id, reply.message_id)
+    update_data_field("last_user_command", chat_id, message.message_id)
     bot.register_next_step_handler(reply, process_new_city, show_menu=True)
 
 
@@ -394,21 +370,20 @@ def changecity(message):
 def cancel_changecity_callback(call):
     """Обработчик кнопки 'Отмена' для команды /changecity"""
     chat_id = call.message.chat.id
-
     try:
         bot.delete_message(chat_id, call.message.message_id)
     except Exception as e:
         bot_logger.warning(f"Ошибка при удалении сообщения с кнопкой 'Отмена': {e}")
-
-    if chat_id in last_user_command:
+    last_command_message = get_data_field("last_user_command", chat_id)
+    if last_command_message:
         try:
-            bot.delete_message(chat_id, last_user_command[chat_id])
-            del last_user_command[chat_id]
+            bot.delete_message(chat_id, last_command_message)
+            update_data_field("last_user_command", chat_id, None)
         except Exception as e:
             bot_logger.warning(f"Ошибка при удалении сообщения команды /changecity: {e}")
-
     bot.clear_step_handler_by_chat_id(chat_id)
     send_settings_menu(chat_id)
+
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "🔔 Уведомления")
@@ -418,82 +393,62 @@ def notifications_settings(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
     user = get_user(user_id)
-
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
-
+    delete_last_menu_message(chat_id)
     if not user:
         bot.send_message(chat_id, "Вы не зарегистрированы. Пожалуйста, начните с команды /start.")
-        return
-    
+        return  
     user = get_user(user_id)
-    
     current_status = "Включены ✅" if user.notifications_enabled else "Отключены ❌"
     status_message = (f"▸ Текущий статус: {current_status}.\n\n"
                         f"Какие уведомления вы будете получать?\n"
                         f"• Предупреждения о резких изменениях погоды в вашем городе.\n"
+                        f"• Ежедневный прогноз погоды.\n"
                         f"• Сообщения о статусе работы бота (например, технические работы).\n\n")
-
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("✅ Включить уведомления", callback_data="enable_notifications"))
     keyboard.add(types.InlineKeyboardButton("❌ Отключить уведомления", callback_data="disable_notifications"))
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
-
     reply = bot.reply_to(message, status_message, reply_markup=keyboard)
+    update_data_field("last_user_command", chat_id, message.message_id)
+    update_data_field("last_menu_message", chat_id, reply.message_id)
 
-    last_user_command[chat_id] = message.message_id
-    last_menu_message[chat_id] = reply.message_id
 
 """ВЫЗОВ МЕНЮ ВЫБОРА ПРОНОЗА ПОГОДЫ"""
 @safe_execute
 @bot.message_handler(regexp=r"^(\📅 Прогноз погоды|/weatherforecast)$")
-def forecast_menu(message):
+def forecast_menu_handler(message):
     """Выводит клавиатуру с выбором прогноза и передаёт ID сообщения дальше."""
-    (message)
     chat_id = message.chat.id
-    if message.chat.id in last_menu_message:
-        try:
-            bot.delete_message(message.chat.id, last_menu_message[message.chat.id])
-        except Exception as e:
-            bot_logger.warning(f"Не удалось удалить сообщение: {e}")
-
+    delete_last_menu_message(chat_id)
     msg = bot.reply_to(message, "Выберите период прогноза:", reply_markup=generate_forecast_keyboard())
-
-    last_user_command[chat_id] = {
+    update_data_field("last_user_command", chat_id, {
         "message_id": message.message_id,
         "command": message.text
-    }
-
-    last_menu_message[chat_id] = msg.message_id
-
+    })
+    update_data_field("last_bot_message", chat_id, msg.message_id)
     return msg.message_id
 
-@bot.callback_query_handler(func=lambda call: call.data == "back_to_forecast_menu")
-def back_to_forecast_menu(call):
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_from_forecast_menu")
+def back_from_forecast_menu(call):
     """Обработчик кнопки 'Назад' в меню прогноза"""
     chat_id = call.message.chat.id
-
     try:
         bot.delete_message(chat_id, call.message.message_id)
     except Exception as e:
-        bot_logger.warning(f"Ошибка при удалении меню прогнозов: {e}")
-
-    bot_logger.debug(f"Последняя команда перед удалением: {last_user_command.get(chat_id)}")
-
-    if chat_id in last_user_command:
-        last_command = last_user_command[chat_id].get("command")
-        if last_command == "📅 Прогноз погоды" or last_command == "/weatherforecast":
+        bot_logger.warning(f"Ошибка при удалении сообщения с меню прогнозов: {e}")
+    last_command_data = get_data_field("last_user_command", chat_id)
+    bot_logger.debug(f"Последняя команда перед удалением: {last_command_data}")
+    if last_command_data:
+        last_command = last_command_data.get("command")
+        if last_command in ["📅 Прогноз погоды", "/weatherforecast"]:
             try:
-                bot.delete_message(chat_id, last_user_command[chat_id]["message_id"])
-                del last_user_command[chat_id]
+                bot.delete_message(chat_id, last_command_data["message_id"])
+                update_data_field("last_user_command", chat_id, None)
             except Exception as e:
-                bot_logger.warning(f"Ошибка при удалении команды: {e}")
-
+                bot_logger.warning(f"Ошибка при удалении сообщения команды: {e}")
     send_main_menu(chat_id)
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["enable_notifications", "disable_notifications"])
@@ -501,24 +456,17 @@ def toggle_notifications(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     message_id = call.message.message_id  
-
     new_status = call.data == "enable_notifications"
-    
     updated_status = toggle_user_notifications(user_id, new_status)
-
     if updated_status is None:
         bot.send_message(chat_id, "Для начала нужно указать город!\nВведите /start.")
         return
-
     current_status = "Включены ✅" if updated_status else "Отключены ❌" 
-
     log_action(f"Пользователь изменил уведомления: {current_status}", call.message)
-
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("✅ Включить уведомления", callback_data="enable_notifications"))
     keyboard.add(types.InlineKeyboardButton("❌ Отключить уведомления", callback_data="disable_notifications"))
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
-
     try:
         bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                               text=f"▸ Текущий статус: {current_status}.\n\n"
@@ -528,7 +476,6 @@ def toggle_notifications(call):
                               reply_markup=keyboard)
     except Exception as e:
         bot_logger.warning(f"Ошибка при редактировании сообщения: {e}")
-
         try:
             bot.delete_message(chat_id, message_id)
         except Exception as e:
@@ -551,32 +498,24 @@ def format_settings(param, reply_to=None):
     else:
         chat_id = param.chat.id
         reply_to = param.message_id if reply_to is None else reply_to
-
-    if chat_id in last_user_command:
-        bot_logger.debug(f"ID команды пользователя уже существует: {last_user_command[chat_id]} для чата {chat_id}. Перезапись не выполнена.")
-    else:
-        last_user_command[chat_id] = reply_to
-
-    menu_message_id = last_bot_message.get(chat_id)
-    if chat_id not in last_user_command:
-        last_user_command[chat_id] = reply_to
-        bot_logger.debug(f"Сохранён новый ID команды пользователя: {reply_to} для чата {chat_id}")
-    else:
-        bot_logger.debug(f"ID команды пользователя уже существует: {last_user_command[chat_id]} для чата {chat_id}. Перезапись не выполнена.")
-
-    if chat_id in last_menu_message:
+    try:
+        update_data_field("last_user_command", chat_id, reply_to)
+        bot_logger.debug(f"Сохранён новый ID команды пользователя: {reply_to} для чата {chat_id}.")
+    except Exception as e:
+        bot_logger.error(f"Ошибка при сохранении last_user_command для чата {chat_id}: {e}")
+    last_menu_id = get_data_field("last_menu_message", chat_id)
+    if last_menu_id:
         try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
+            bot.delete_message(chat_id, last_menu_id)
+            update_data_field("last_menu_message", chat_id, None)
+            bot_logger.debug(f"Удалено предыдущее меню для чата {chat_id}.")
         except Exception as e:
             bot_logger.warning(f"Ошибка при удалении старого сообщения: {e}")
-
     user = get_user(chat_id)
     if not user:
         bot_logger.error(f"Ошибка: пользователь {chat_id} не найден в format_settings()")
         bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
         return
-
     header = f"Сейчас ваши данные измеряются в следующих величинах:"
     separator = "─" * min(len(header), 21)
     text = (
@@ -588,23 +527,56 @@ def format_settings(param, reply_to=None):
         f"{separator}\n"
         f"Выберите параметр для изменения единиц измерения:"
     )
-
+    menu_message_id = get_data_field("last_bot_message", chat_id)
     try:
         if menu_message_id:
-            # Редактируем существующее сообщение
             bot_logger.debug(f"Редактируем сообщение меню: chat_id={chat_id}, message_id={menu_message_id}")
             bot.edit_message_text(text, chat_id, menu_message_id, reply_markup=generate_format_keyboard())
         else:
-            # Отправляем новое сообщение, если старое не найдено
             raise KeyError("Меню для редактирования отсутствует. Отправляем новое сообщение.")
     except Exception as e:
         bot_logger.warning(f"Ошибка при редактировании сообщения: {e}. Отправляем новое сообщение.")
         try:
             msg = bot.send_message(chat_id, text, reply_markup=generate_format_keyboard(), reply_to_message_id=reply_to)
-            last_bot_message[chat_id] = msg.message_id
+            update_data_field("last_bot_message", chat_id, msg.message_id)
             bot_logger.debug(f"Новое сообщение меню отправлено: message_id={msg.message_id}")
         except Exception as send_error:
             bot_logger.error(f"Ошибка при отправке нового сообщения: {send_error}")
+
+
+@safe_execute
+@bot.callback_query_handler(func=lambda call: call.data == "return_to_format_settings")
+def return_to_format_settings(call):
+    """Возвращает пользователя в меню единиц измерения без обновления last_user_command."""
+    chat_id = call.message.chat.id
+    user = get_user(chat_id)
+    if not user:
+        bot_logger.error(f"Ошибка: пользователь {chat_id} не найден.")
+        bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
+        return
+    header = f"Сейчас ваши данные измеряются в следующих величинах:"
+    separator = "─" * min(len(header), 21)
+    text = (
+        f"{header}\n"
+        f"{separator}\n"
+        f"▸ Температура: {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
+        f"▸ Давление: {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
+        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
+        f"{separator}\n"
+        f"Выберите параметр для изменения единиц измерения:"
+    )
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id,
+            call.message.message_id,
+            reply_markup=generate_format_keyboard(),
+            parse_mode="HTML"
+        )
+        bot_logger.debug(f"Сообщение с меню единиц измерения успешно обновлено для чата {chat_id}.")
+    except Exception as e:
+        bot_logger.warning(f"Ошибка при обновлении меню единиц измерения: {e}")
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "format_settings")
@@ -612,50 +584,39 @@ def format_settings_callback(call):
     """Обработчик кнопки 'Сохранить', возвращает в меню формата данных"""
     format_settings(call.message)
 
+
 #ФУНКЦИИ В РАЗРАБОТКЕ
 @safe_execute
 def feature_in_development(message):
     """Временный обработчик для уведомления о разработке"""
     (message)
     chat_id = message.chat.id
-
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id] 
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении старого сообщения: {e}")
-
+    delete_last_menu_message(chat_id)
     feature_name = "профиля" if message.text == "🎭 Профиль" else "друзей"
     bot.reply_to(message, f"‼️ Функция {feature_name} всё ещё в разработке!\n\nСледите за обновлениями!")
     send_main_menu(chat_id)
+
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "↩ Назад")
 def settings_back_to_main_menu(message):
     """Обработчик кнопки '↩ Назад' в главном меню"""
     chat_id = message.chat.id
-
-    if chat_id in last_menu_message:
+    delete_last_menu_message(chat_id)
+    last_settings_message_id = get_data_field("last_settings_command", chat_id)
+    if last_settings_message_id:
         try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id] 
+            bot.delete_message(chat_id, last_settings_message_id)
+            update_data_field("last_settings_command", chat_id, None)
+            bot_logger.debug(f"Удалено сообщение из last_settings_command: {last_settings_message_id} для чата {chat_id}")
         except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении старого сообщения: {e}")
-    send_main_menu(chat_id)
-
-    if chat_id in last_settings_command:
-            try:
-                bot.delete_message(chat_id, last_settings_command[chat_id])
-                bot_logger.debug(f"Удалено сообщение из last_settings_command: {last_settings_command[chat_id]} для чата {chat_id}")
-                del last_settings_command[chat_id]
-            except Exception as e:
-                bot_logger.warning(f"Ошибка при удалении сообщения из last_settings_command: {e}")
-
+            bot_logger.warning(f"Ошибка при удалении сообщения из last_settings_command: {e}")
     try:
         bot.delete_message(chat_id, message.message_id)
     except Exception as e:
         bot_logger.warning(f"Ошибка при удалении сообщения '↩ Назад': {e}")
+    send_main_menu(chat_id)
+
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "🌦 Погодные данные")
@@ -663,29 +624,20 @@ def weather_data_settings(message):
     """Обработчик кнопки 'Погодные данные' в настройках"""
     user = get_user(message.from_user.id)
     chat_id = message.chat.id
-
-    if chat_id in last_menu_message:
-        try:
-            bot.delete_message(chat_id, last_menu_message[chat_id])
-            del last_menu_message[chat_id]
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении 'Выберите настройку': {e}")
-            
-    last_user_command[chat_id] = message.message_id
+    delete_last_menu_message(chat_id)         
+    update_data_field("last_user_command", chat_id, message.message_id)
     bot_logger.debug(f"Сохранён ID команды: {message.message_id} для чата {chat_id}")
-
     if not user:
         bot.send_message(message.chat.id, "Ошибка: пользователь не найден.")
         return
-
     bot_logger.debug(f"Тип user: {type(user)}. Данные: {user}")
-
     text = "Выберите данные, которые вы хотите видеть при получении погоды:"
     try:
         keyboard = generate_weather_data_keyboard(user)
         bot.send_message(chat_id, text, reply_markup=keyboard, reply_to_message_id=message.message_id)
     except Exception as e:
         bot_logger.error(f"Ошибка в weather_data_settings: {e}")
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_weather_param_"))
@@ -741,7 +693,7 @@ def menu_handler(message):
 
 menu_actions = {
     "🌎 Узнать погоду": weather,
-    "📅 Прогноз погоды": forecast_menu,
+    "📅 Прогноз погоды": forecast_menu_handler,
     "⚙️ Настройки": lambda msg: send_settings_menu(msg.chat.id),
     "👥 Друзья": feature_in_development,
     "🎭 Профиль": feature_in_development,
@@ -770,23 +722,23 @@ def help_command(message):
 
     bot.reply_to(message, help_text)
 
+
 @safe_execute
 def process_new_city(message, show_menu=False):
     """Обрабатывает ввод нового города пользователем и редактирует сообщение с текущим городом."""
     user_id = message.from_user.id
     chat_id = message.chat.id
     city = message.text.strip()
-
     def error_reply(text):
         """Редактирует сообщение с ошибкой, добавляет кнопку отмены и запрашивает повторный ввод."""
         keyboard = types.InlineKeyboardMarkup()
         cancel_button = types.InlineKeyboardButton("✖ Отмена", callback_data="cancel_changecity")
         keyboard.add(cancel_button)
-
+        last_menu_id = get_data_field("last_menu_message", chat_id)
         try:
             bot.edit_message_text(
                 chat_id=chat_id,
-                message_id=last_menu_message[chat_id],
+                message_id=last_menu_id,
                 text=f"{text}\n\nВведите название нового города для обновления!",
                 reply_markup=keyboard,
                 parse_mode="HTML"
@@ -796,9 +748,7 @@ def process_new_city(message, show_menu=False):
             reply = bot.reply_to(message, text, reply_markup=keyboard)
             bot.register_next_step_handler(reply, process_new_city, show_menu)
             return
-
         bot.register_next_step_handler(message, process_new_city, show_menu)
-
     if city == "/start":
         start(message)
         return
@@ -818,22 +768,88 @@ def process_new_city(message, show_menu=False):
         except Exception as e:
             bot_logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
         return
-
     updated = update_user_city(user_id, city, message.from_user.username)
     success_text = (f"Теперь ваш основной город — {city}!"
                     if updated else f"‼️ Ваш основной город уже установлен: {city}.")
-
+    last_menu_id = get_data_field("last_menu_message", chat_id)
     try:
         bot.edit_message_text(
             chat_id=chat_id,
-            message_id=last_menu_message[chat_id],
+            message_id=last_menu_id,
             text=success_text,
             parse_mode="HTML"
         )
-        del last_menu_message[chat_id]
+        update_data_field("last_menu_message", chat_id, None)
     except Exception as e:
         bot_logger.warning(f"Не удалось отредактировать сообщение: {e}")
         bot.reply_to(message, success_text)
+    try:
+        bot.delete_message(chat_id, message.message_id)
+        bot_logger.debug(f"Удалено сообщение пользователя с новым городом: {message.message_id}")
+    except Exception as e:
+        bot_logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
+    if show_menu:
+        send_settings_menu(chat_id)
+
+@safe_execute
+@safe_execute
+def process_new_city_registration(message):
+    """Обрабатывает ввод нового города для регистрации пользователя."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    city = message.text.strip()
+
+    def error_reply(text):
+        """Редактирует сообщение с ошибкой, запрашивает повторный ввод без кнопки отмены."""
+        last_bot_msg_id = get_data_field("last_bot_message", chat_id)
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=last_bot_msg_id,
+                text=f"{text}\n\nВведите название своего города для завершения регистрации!",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            bot_logger.warning(f"Не удалось отредактировать сообщение об ошибке: {e}")
+            bot.register_next_step_handler(message, process_new_city_registration)
+            return
+        bot.register_next_step_handler(message, process_new_city_registration)
+
+    # Проверки на валидность города
+    if city == "/start":
+        start(message)
+        return
+    if city.startswith("/") or not city:
+        error_reply(f"‼️ Отправьте название города, а не команду!")
+        try:
+            bot.delete_message(chat_id, message.message_id)
+            bot_logger.debug(f"Удалено сообщение пользователя с новым городом: {message.message_id}")
+        except Exception as e:
+            bot_logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
+        return
+    if not re.match(r'^[A-Za-zА-Яа-яЁё\s\-]+$', city):
+        error_reply(f"‼️ Название города может содержать только буквы, пробелы и дефисы!")
+        try:
+            bot.delete_message(chat_id, message.message_id)
+            bot_logger.debug(f"Удалено сообщение пользователя с новым городом: {message.message_id}")
+        except Exception as e:
+            bot_logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
+        return
+
+    # Обновление города пользователя
+    updated = update_user_city(user_id, city, message.from_user.username)
+    success_text = f"Добро пожаловать, {message.from_user.first_name}!\n\nТеперь ваш основной город — {city}."
+    last_bot_msg_id = get_data_field("last_bot_message", chat_id)
+    try:
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=last_bot_msg_id,
+            text=success_text,
+            parse_mode="HTML"
+        )
+        update_data_field("last_bot_message", chat_id, None)  # Сбрасываем ID после завершения
+    except Exception as e:
+        bot_logger.warning(f"Не удалось отредактировать сообщение: {e}")
 
     try:
         bot.delete_message(chat_id, message.message_id)
@@ -841,8 +857,8 @@ def process_new_city(message, show_menu=False):
     except Exception as e:
         bot_logger.warning(f"Не удалось удалить сообщение пользователя: {e}")
 
-    if show_menu:
-        send_settings_menu(chat_id)
+    # Переход в главное меню после успешной регистрации
+    send_main_menu(chat_id)
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["change_temp_unit", "change_pressure_unit", "change_wind_speed_unit"])
@@ -860,12 +876,17 @@ def change_unit_menu(call):
 
     current_unit = getattr(user, f"{unit_type}_unit", "N/A")
 
-    bot.edit_message_text(f"Выберите единицу измерения {display_text}:", 
-                          chat_id, call.message.message_id, 
-                          reply_markup=generate_unit_selection_keyboard(current_unit, unit_type)
-    )
+    try:
+        bot.edit_message_text(
+            f"Выберите единицу измерения {display_text}:",
+            chat_id,
+            call.message.message_id,
+            reply_markup=generate_unit_selection_keyboard(current_unit, unit_type)
+        )
+    except Exception as e:
+        bot_logger.warning(f"Ошибка при редактировании сообщения для изменения единицы измерения: {e}")
 
-    last_bot_message[chat_id] = call.message.message_id
+    update_data_field("last_bot_message", chat_id, call.message.message_id)
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))

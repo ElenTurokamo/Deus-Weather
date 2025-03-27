@@ -1,5 +1,6 @@
 #ИМПОРТЫ
 from dotenv import load_dotenv
+from timezonefinder import TimezoneFinder
 
 import requests
 import os
@@ -24,6 +25,10 @@ def get_weather(city):
         "wind_speed": response_data["wind"]["speed"],
         "pressure": round(response_data["main"]["pressure"] * 0.75006),
         "visibility": response_data.get("visibility", 0),
+        "coordinates": {
+            "lat": response_data["coord"]["lat"],
+            "lon": response_data["coord"]["lon"]
+        }  
     }
 
 #ПОЛУЧЕНИЕ ПРОГНОЗА НА НЕДЕЛЮ ИЗ API
@@ -51,3 +56,18 @@ def fetch_today_forecast(city):
         return None
 
     return response_data["list"] 
+
+#ПОЛУЧЕНИЕ ЧАСОВОГО ПОЯСА ПОЛЬЗОВАТЕЛЯ
+def get_city_timezone(city):
+    """
+    Получает часовой пояс для города на основе его координат.
+    """
+    weather_data = get_weather(city)
+    if not weather_data or "coordinates" not in weather_data:
+        return None  
+
+    coordinates = weather_data["coordinates"]
+    tf = TimezoneFinder()
+    timezone = tf.timezone_at(lat=coordinates['lat'], lng=coordinates['lon'])
+
+    return timezone

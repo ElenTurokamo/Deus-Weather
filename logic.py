@@ -1,7 +1,8 @@
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import create_engine
+from sqlalchemy.sql import func
 from telebot import types
-from weather import fetch_today_forecast, fetch_weekly_forecast
+from weather import fetch_today_forecast, fetch_weekly_forecast, get_city_timezone
 from models import User
 from datetime import date, timedelta, datetime
 
@@ -9,11 +10,12 @@ import os
 import logging
 import importlib
 import json
+import threading
 
 #СЛОВАРИ
 UNIT_TRANSLATIONS = {
     "temp": {"C": "°C", "F": "°F", "K": "К"},
-    "pressure": {"mmHg": "мм рт. ст.", "mbar": "мбар", "hPa": "гПа", "inHg": "дюйм. рт. ст."},
+    "pressure": {"mmHg": "мм рт.", "mbar": "мбар", "hPa": "гПа", "inHg": "дюйм. рт."},
     "wind_speed": {"m/s": "м/с", "km/h": "км/ч", "mph": "миль/ч"}
 }
 
@@ -82,21 +84,103 @@ def get_bot():
 
 #СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЯ
 def save_user(user_id, username=None, preferred_city=None):
+    """Добавляет пользователя в базу данных или обновляет его данные."""
     db = SessionLocal()
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
-        user = User(user_id=user_id, username=username, preferred_city=preferred_city)
+        last_unique_id = db.query(func.max(User.unique_id)).scalar() or 100000000
+        new_unique_id = last_unique_id + 1
+        timezone = get_city_timezone(preferred_city) if preferred_city else "UTC"
+        user = User(
+            user_id=user_id,
+            unique_id=new_unique_id,
+            username=username,
+            preferred_city=preferred_city,
+            timezone=timezone
+        )
         db.add(user)
         db.commit()
-        logging.debug(f"Пользователь с ID {user_id} ({username}) добавлен в базу данных.")
+        logging.debug(f"Пользователь с ID {user_id} ({username}) добавлен с unique_id {new_unique_id}.")
     else:
         if preferred_city:
             user.preferred_city = preferred_city
+            user.timezone = get_city_timezone(preferred_city) or user.timezone 
         if username:
             user.username = username
         db.commit()
         logging.debug(f"Данные пользователя с ID {user_id} ({username}) обновлены.")
     db.close()
+
+#ОБЩЕЕ ХРАНИЛИЩЕ СЛОВАРЕЙ
+DATA_FILE = "data_store.json"
+_lock = threading.Lock()
+
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w", encoding="utf-8") as file:
+        json.dump({
+            "last_menu_message": {},
+            "last_settings_command": {},
+            "last_bot_message": {},
+            "last_user_command": {},
+            "stop_event": False
+        }, file, ensure_ascii=False, indent=4)
+
+def load_data():
+    """Загружает данные из JSON-файла."""
+    with _lock:
+        with open(DATA_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+
+def save_data(data):
+    """Сохраняет данные в JSON-файл."""
+    with _lock:
+        with open(DATA_FILE, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+
+def get_data(key):
+    """Получает данные из хранилища по ключу."""
+    data = load_data()
+    return data.get(key, {})
+
+def set_data(key, value):
+    """Устанавливает значение для конкретного ключа в хранилище."""
+    data = load_data()
+    data[key] = value
+    save_data(data)
+
+def update_data_field(dict_key, sub_key, value):
+    """Обновляет конкретное поле в словаре внутри хранилища."""
+    data = load_data()
+    if dict_key not in data:
+        data[dict_key] = {}
+    data[dict_key][str(sub_key)] = value
+    save_data(data)
+
+def get_data_field(dict_key, sub_key):
+    """Получает значение конкретного поля из словаря в хранилище."""
+    data = load_data()
+    return data.get(dict_key, {}).get(str(sub_key))
+
+# Примеры работы со stop_event
+def is_stop_event_set():
+    """Проверяет, установлен ли stop_event."""
+    return get_data("stop_event")
+
+def set_stop_event(value):
+    """Устанавливает значение stop_event."""
+    set_data("stop_event", value)
+
+
+#ПОЛУЧЕНИЕ СПИСКА ПОЛЬЗОВАТЕЛЕЙ ИЗ БД
+def get_all_users(filter_notifications=True):
+    """Возвращает список всех пользователей из базы данных."""
+    db = SessionLocal()
+    query = db.query(User)
+    if filter_notifications:
+        query = query.filter(User.notifications_enabled == True)
+    users = query.all()
+    db.close()
+    return users
 
 #ИЗМЕНЕНИЕ ЕДИНИЦ ИЗМЕРЕНИЯ
 def update_user_unit(user_id, unit_type, new_value):
@@ -131,21 +215,25 @@ def toggle_user_notifications(user_id, new_status):
 
 #ОБНОВЛЕНИЕ ГОРОДА ПОЛЬЗОВАТЕЛЯ
 def update_user_city(user_id, city, username=None):
-    db = SessionLocal()
-    user = db.query(User).filter(User.user_id == user_id).first()
-
-    if user:
-        if user.preferred_city == city:
-            db.close()
-            return False
-        user.preferred_city = city
-    else:
-        user = User(user_id=user_id, username=username, preferred_city=city)
-        db.add(user)
-
-    db.commit()
-    db.close()
-    return True 
+    """Обновляет город и часовой пояс пользователя в БД."""
+    with SessionLocal() as db:  # Используем контекстный менеджер для автоматического закрытия сессии
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if user:
+            if user.preferred_city == city:
+                return False
+            user.preferred_city = city
+            user.timezone = get_city_timezone(city) or "UTC"
+        else:
+            user = User(
+                user_id=user_id,
+                username=username,
+                preferred_city=city,
+                timezone=get_city_timezone(city) or "UTC"
+            )
+            db.add(user)
+        db.commit()
+        logging.info(f"Пользователь {user_id}: город обновлён на {city}, часовой пояс — {user.timezone}.")
+        return True
 
 #КОНВЕРТАЦИЯ ЕДИНИЦ ИЗМЕРЕНИЯ
 def convert_temperature(value, unit):
@@ -178,8 +266,8 @@ def safe_execute(func):
 
             if args and hasattr(args[0], "chat"):
                 bot.reply_to(args[0],
-                             "Упс.. Похоже произошли небольшие технические шоколадки.\n"
-                             "Попробуйте позже ~o~")
+                             "Упс... Похоже, произошли небольшие технические шоколадки!\n"
+                             "Отправьте повторный запрос немного позже ~o~")
     return wrapper
 
 #ЛОКАЛЬНЫЙ ИМПОРТ БОТА
@@ -203,7 +291,7 @@ def generate_forecast_keyboard():
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
     keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_forecast_menu"))
+    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_from_forecast_menu"))
     return keyboard
 
 def generate_format_keyboard():
@@ -250,7 +338,7 @@ def generate_unit_selection_keyboard(current_value, unit_type):
         icon = " ✅" if current_value == value else ""
         keyboard.add(types.InlineKeyboardButton(f"{name}{icon}", callback_data=f"set_{unit_type}_unit_{value}"))
 
-    keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="format_settings"))
+    keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="return_to_format_settings"))
     return keyboard
 
 def format_weather_data(data, user):
@@ -458,3 +546,9 @@ def get_weekly_forecast(city, user):
         }
         for date, data in sorted(daily_data.items())
     ]
+
+def is_today(timestamp):
+    """Проверяет, относится ли переданный timestamp к сегодняшнему дню."""
+    today = datetime.now().date()
+    date_to_check = datetime.utcfromtimestamp(timestamp).date()
+    return today == date_to_check
