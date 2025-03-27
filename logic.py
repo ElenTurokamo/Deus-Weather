@@ -41,6 +41,8 @@ SessionLocal = sessionmaker(bind=engine)
 
 def update_user(user_id: int, **kwargs):
     """Обновляет данные пользователя в БД. kwargs - любые поля, которые нужно обновить."""
+    logging.debug(f"Вызов update_user с user_id={user_id} и kwargs={kwargs}")  # Логирование входящих аргументов
+    
     db: Session = SessionLocal()
     user = db.query(User).filter(User.user_id == user_id).first()
     
@@ -56,7 +58,7 @@ def update_user(user_id: int, **kwargs):
 
     try:
         db.commit()
-        logging.debug(f"Обновление пользователя {user_id} успешно завершено.")
+        logging.debug(f"Обновление пользователя {user_id} успешно завершено с параметрами {kwargs}.")  # Логирование успешного обновления
     except Exception as e:
         logging.error(f"Ошибка при обновлении пользователя {user_id}: {e}")
         db.rollback()
@@ -111,6 +113,51 @@ def save_user(user_id, username=None, preferred_city=None):
         logging.debug(f"Данные пользователя с ID {user_id} ({username}) обновлены.")
     db.close()
 
+#ДЕКОДЕРЫ БД
+def decode_tracked_params(tracked_params):
+    """Декодирует JSON-строку или возвращает словарь, иначе — значение по умолчанию."""
+    default_params = {
+        "description": True,
+        "temperature": True,
+        "humidity": True,
+        "precipitation": True,
+        "pressure": True,
+        "wind_speed": True,
+        "visibility": True
+    }
+
+    if isinstance(tracked_params, str):
+        try:
+            return json.loads(tracked_params)
+        except json.JSONDecodeError:
+            logging.warning("❌ Ошибка декодирования JSON. Используем значения по умолчанию.")
+            return default_params
+    elif isinstance(tracked_params, dict):
+        return tracked_params
+    else:
+        logging.warning("❌ Некорректный формат tracked_params. Используем значения по умолчанию.")
+        return default_params
+    
+def decode_notification_settings(notification_settings):
+    """Декодирует JSON-строку или возвращает словарь, иначе — значение по умолчанию."""
+    default_settings = {
+        "bot_notifications": True,
+        "forecast_notifications": True,
+        "weather_threshold_notifications": False
+    }
+
+    if isinstance(notification_settings, str):
+        try:
+            return json.loads(notification_settings)
+        except json.JSONDecodeError:
+            logging.warning("❌ Ошибка декодирования JSON настроек уведомлений. Используем значения по умолчанию.")
+            return default_settings
+    elif isinstance(notification_settings, dict):
+        return notification_settings
+    else:
+        logging.warning("❌ Некорректный формат notification_settings. Используем значения по умолчанию.")
+        return default_settings
+     
 #ОБЩЕЕ ХРАНИЛИЩЕ СЛОВАРЕЙ
 DATA_FILE = "data_store.json"
 _lock = threading.Lock()
@@ -175,11 +222,15 @@ def set_stop_event(value):
 def get_all_users(filter_notifications=True):
     """Возвращает список всех пользователей из базы данных."""
     db = SessionLocal()
-    query = db.query(User)
-    if filter_notifications:
-        query = query.filter(User.notifications_enabled == True)
-    users = query.all()
+    users = db.query(User).all()
     db.close()
+
+    if filter_notifications:
+        users = [
+            user for user in users 
+            if decode_notification_settings(user.notifications_settings).get("forecast_notifications", False)
+        ]
+
     return users
 
 #ИЗМЕНЕНИЕ ЕДИНИЦ ИЗМЕРЕНИЯ
@@ -196,9 +247,9 @@ def update_user_unit(user_id, unit_type, new_value):
         elif unit_type == "wind_speed":
             user.wind_speed_unit = new_value
         db.commit()
-        db.close()  # Закрываем сессию сразу после изменений
+        db.close()  
     else:
-        db.close()  # Чтобы не было утечек, закрываем и если user=None
+        db.close() 
 
 #ОТОБРАЖЕНИЕ УВЕДОМЛЕНИЙ
 def toggle_user_notifications(user_id, new_status):
@@ -208,10 +259,12 @@ def toggle_user_notifications(user_id, new_status):
         if not user:
             return None
         
-        user.notifications_enabled = new_status
+        settings = decode_notification_settings(user.notifications_settings)
+        settings["forecast_notifications"] = new_status
+        user.notifications_settings = json.dumps(settings)
         session.commit()
         
-        return user.notifications_enabled
+        return settings["forecast_notifications"]
 
 #ОБНОВЛЕНИЕ ГОРОДА ПОЛЬЗОВАТЕЛЯ
 def update_user_city(user_id, city, username=None):
@@ -325,6 +378,26 @@ def generate_weather_data_keyboard(user):
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
     return keyboard
 
+
+def generate_notification_settings_keyboard(user):
+    """Создаёт клавиатуру для выбора настроек уведомлений"""
+    options = {
+        "weather_threshold_notifications": "Оповещения об изменении погоды",
+        "forecast_notifications": "Ежедневный прогноз",
+        "bot_notifications": "Новости бота"
+    }
+
+    notification_settings = decode_notification_settings(user.notifications_settings)
+    keyboard = types.InlineKeyboardMarkup()
+
+    for key, label in options.items():
+        icon = "✅" if notification_settings.get(key, False) else ""
+        keyboard.add(types.InlineKeyboardButton(f"{icon} {label}", callback_data=f"toggle_notification_{key}"))
+
+    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
+    return keyboard
+
+
 """ВЫБОР ЕДИНИЦ ИЗМЕРЕНИЯ"""
 def generate_unit_selection_keyboard(current_value, unit_type):
     unit_options = {
@@ -381,36 +454,6 @@ def format_weather_data(data, user):
             weather_text += f"▸ {label}: {value}\n"
 
     return weather_text + "\n      ⟪ Deus Weather ⟫"
-
-def decode_tracked_params(tracked_params):
-    """
-    Декодирует JSON-строку или возвращает объект как есть, если он уже является словарём.
-    Если входные данные некорректны, возвращает значения по умолчанию.
-
-    :param tracked_params: JSON-строка или словарь.
-    :return: Декодированный словарь.
-    """
-    default_params = {
-        "description": True,
-        "temperature": True,
-        "humidity": True,
-        "precipitation": True,
-        "pressure": True,
-        "wind_speed": True,
-        "visibility": True
-    }
-
-    if isinstance(tracked_params, str):
-        try:
-            return json.loads(tracked_params)
-        except json.JSONDecodeError:
-            logging.warning("❌ Ошибка декодирования JSON. Используем значения по умолчанию.")
-            return default_params
-    elif isinstance(tracked_params, dict):
-        return tracked_params
-    else:
-        logging.warning("❌ Некорректный формат tracked_params. Используем значения по умолчанию.")
-        return default_params
 
 def format_change(label, old_value, new_value, unit=""):
     """Форматирует изменения данных, добавляя стрелки при изменении значений."""
@@ -546,9 +589,3 @@ def get_weekly_forecast(city, user):
         }
         for date, data in sorted(daily_data.items())
     ]
-
-def is_today(timestamp):
-    """Проверяет, относится ли переданный timestamp к сегодняшнему дню."""
-    today = datetime.now().date()
-    date_to_check = datetime.utcfromtimestamp(timestamp).date()
-    return today == date_to_check

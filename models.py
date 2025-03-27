@@ -22,7 +22,17 @@ class User(Base):
     unique_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255), unique=True, nullable=True)
     preferred_city = Column(String(255), nullable=True)
-    notifications_enabled = Column(Boolean, default=True, server_default='1', nullable=False)
+    
+    notifications_settings = Column(
+        JSON,
+        default={
+            "forecast_notifications": True,
+            "bot_notifications": True,
+            "weather_threshold_notifications": True
+        },
+        nullable=False
+    )
+
     timezone = Column(String(50), nullable=True, default=None)
 
     tracked_weather_params = Column(JSON, nullable=False, default={

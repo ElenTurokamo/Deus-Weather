@@ -364,7 +364,6 @@ def changecity(message):
     update_data_field("last_user_command", chat_id, message.message_id)
     bot.register_next_step_handler(reply, process_new_city, show_menu=True)
 
-
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_changecity")
 def cancel_changecity_callback(call):
@@ -387,30 +386,69 @@ def cancel_changecity_callback(call):
 
 @safe_execute
 @bot.message_handler(func=lambda message: message.text == "🔔 Уведомления")
-def notifications_settings(message):
-    (message)
-    log_action("Пользователь открыл настройки уведомлений", message)
+def notification_settings(message):
+    """Обработчик кнопки 'Настройки уведомлений' в настройках"""
+    user = get_user(message.from_user.id)
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    user = get_user(user_id)
     delete_last_menu_message(chat_id)
-    if not user:
-        bot.send_message(chat_id, "Вы не зарегистрированы. Пожалуйста, начните с команды /start.")
-        return  
-    user = get_user(user_id)
-    current_status = "Включены ✅" if user.notifications_enabled else "Отключены ❌"
-    status_message = (f"▸ Текущий статус: {current_status}.\n\n"
-                        f"Какие уведомления вы будете получать?\n"
-                        f"• Предупреждения о резких изменениях погоды в вашем городе.\n"
-                        f"• Ежедневный прогноз погоды.\n"
-                        f"• Сообщения о статусе работы бота (например, технические работы).\n\n")
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton("✅ Включить уведомления", callback_data="enable_notifications"))
-    keyboard.add(types.InlineKeyboardButton("❌ Отключить уведомления", callback_data="disable_notifications"))
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
-    reply = bot.reply_to(message, status_message, reply_markup=keyboard)
     update_data_field("last_user_command", chat_id, message.message_id)
-    update_data_field("last_menu_message", chat_id, reply.message_id)
+    bot_logger.debug(f"Сохранён ID команды: {message.message_id} для чата {chat_id}")
+
+    if not user:
+        bot.send_message(chat_id, "Ошибка: пользователь не найден.")
+        return
+
+    bot_logger.debug(f"Тип user: {type(user)}. Данные: {user}")
+    text = "Выберите уведомления, которые вы хотите получать:"
+    try:
+        keyboard = generate_notification_settings_keyboard(user)
+        bot.send_message(chat_id, text, reply_markup=keyboard, reply_to_message_id=message.message_id)
+    except Exception as e:
+        bot_logger.error(f"Ошибка в notification_settings: {e}")
+
+@safe_execute
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_notification_"))
+def toggle_notification(call):
+    """Обработчик изменения состояния уведомлений"""
+    chat_id = call.message.chat.id
+    user = get_user(call.from_user.id)
+    setting_key = call.data.replace("toggle_notification_", "")
+
+    bot_logger.debug(f"Тип user перед обработкой: {type(user)}. Данные: {user}")
+
+    if not user:
+        bot_logger.error(f"Пользователь с ID {call.from_user.id} не найден.")
+        return 
+
+    try:
+        notification_settings = decode_notification_settings(user.notifications_settings)
+        bot_logger.debug(f"Декодированные параметры уведомлений: {notification_settings}")
+    except Exception as e:
+        bot_logger.error(f"Ошибка декодирования уведомлений пользователя {user.user_id}: {e}")
+        notification_settings = {
+            "weather_threshold_notifications": True,
+            "forecast_notifications": True,
+            "bot_notifications": True
+        }
+
+    if setting_key in notification_settings:
+        notification_settings[setting_key] = not notification_settings[setting_key]
+    else:
+        bot_logger.warning(f"Неизвестный параметр {setting_key} для пользователя {user.user_id}")
+        return
+
+    try:
+        update_user(user.user_id, notifications_settings=json.dumps(notification_settings))
+
+        user = get_user(call.from_user.id)
+        bot_logger.debug(f"Обновлённые данные пользователя: {user}")
+
+        new_keyboard = generate_notification_settings_keyboard(user)  
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_keyboard)
+    except Exception as e:
+        bot_logger.warning(f"Ошибка при обновлении notifications_settings для пользователя {user.user_id}: {e}")
+
+    bot.answer_callback_query(call.id)
 
 
 """ВЫЗОВ МЕНЮ ВЫБОРА ПРОНОЗА ПОГОДЫ"""
@@ -449,45 +487,6 @@ def back_from_forecast_menu(call):
                 bot_logger.warning(f"Ошибка при удалении сообщения команды: {e}")
     send_main_menu(chat_id)
 
-
-@safe_execute
-@bot.callback_query_handler(func=lambda call: call.data in ["enable_notifications", "disable_notifications"])
-def toggle_notifications(call):
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
-    message_id = call.message.message_id  
-    new_status = call.data == "enable_notifications"
-    updated_status = toggle_user_notifications(user_id, new_status)
-    if updated_status is None:
-        bot.send_message(chat_id, "Для начала нужно указать город!\nВведите /start.")
-        return
-    current_status = "Включены ✅" if updated_status else "Отключены ❌" 
-    log_action(f"Пользователь изменил уведомления: {current_status}", call.message)
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton("✅ Включить уведомления", callback_data="enable_notifications"))
-    keyboard.add(types.InlineKeyboardButton("❌ Отключить уведомления", callback_data="disable_notifications"))
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
-    try:
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text=f"▸ Текущий статус: {current_status}.\n\n"
-                                    f"Какие уведомления вы будете получать?\n"
-                                    f"• Предупреждения о резких изменениях погоды в вашем городе.\n"
-                                    f"• Сообщения о статусе работы бота (например, технические работы).\n\n",
-                              reply_markup=keyboard)
-    except Exception as e:
-        bot_logger.warning(f"Ошибка при редактировании сообщения: {e}")
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении сообщения: {e}")
-
-        bot.send_message(chat_id,
-                         f"▸ Текущий статус: {current_status}.\n\n"
-                            f"Какие уведомления вы будете получать?\n"
-                            f"• Предупреждения о резких изменениях погоды в вашем городе.\n"
-                            f"• Сообщения о статусе работы бота (например, технические работы).\n\n",
-                         reply_markup=keyboard)
-                         
 
 #ОТКРЫТИЕ МЕНЮ ЕДИНИЦ ИЗМЕРЕНИЯ ДАННЫХ
 @safe_execute
@@ -698,7 +697,7 @@ menu_actions = {
     "👥 Друзья": feature_in_development,
     "🎭 Профиль": feature_in_development,
     "🏙 Изменить город": changecity,
-    "🔔 Уведомления": notifications_settings,
+    "🔔 Уведомления": notification_settings,
     "↩ Назад": settings_back_to_main_menu,
     "📏 Единицы измерения": lambda msg: format_settings(msg),
     "🌦 Погодные данные": generate_weather_data_keyboard
@@ -915,6 +914,7 @@ def set_unit(call):
 
     user = get_user(user_id)
     new_keyboard = generate_unit_selection_keyboard(getattr(user, f"{unit_type}_unit"), unit_type)
+    
 
     try:    
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_keyboard)

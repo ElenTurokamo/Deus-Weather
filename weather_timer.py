@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from functools import wraps
 from models import CheckedCities, User, Base
 from logic import safe_execute, convert_pressure, convert_temperature, convert_wind_speed, decode_tracked_params
-from logic import UNIT_TRANSLATIONS, get_all_users  
+from logic import UNIT_TRANSLATIONS, get_all_users, decode_notification_settings
 from weather import get_weather
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine    
@@ -100,10 +100,16 @@ def check_weather_changes(city, current_data):
                 "description": random.choice(["Солнечно", "Дождь", "Облачно", "Гроза"])
             }
 
-        users = db.query(User).filter(User.preferred_city == city, User.notifications_enabled == True).all()
-        if not users:
+        users = db.query(User).filter(User.preferred_city == city).all()
+        
+        users_with_notifications = [
+            user for user in users 
+            if decode_notification_settings(user.notifications_settings).get("weather_threshold_notifications", False)
+        ]
+        
+        if not users_with_notifications:
             timer_logger.info(f"❌ Уведомления для города {city} отключены. Проверка завершена.")
-            return True  
+            return True
 
         city_data = db.query(CheckedCities).filter_by(city_name=city).first()
 
@@ -362,13 +368,19 @@ def send_weather_update(users, city, changes, current_data):
 def check_all_cities():
     """Проверяет все города, для которых включены уведомления."""
     db = SessionLocal()
-    cities = db.query(User.preferred_city).filter(User.notifications_enabled == True).distinct().all()
-    
-    cities = {city[0] for city in cities if city[0]} 
-    checked_cities = set()  
 
+    users = db.query(User.preferred_city, User.notifications_settings).distinct().all()
+
+    cities = set()
+    for city, settings in users:
+        if city:
+            decoded_settings = decode_notification_settings(settings)
+            if decoded_settings.get("weather_threshold_notifications", False):
+                cities.add(city)
+
+    checked_cities = set()
     attempt = 1
-    max_attempts = 3  
+    max_attempts = 3
 
     while cities - checked_cities and attempt <= max_attempts:
         remaining_cities = cities - checked_cities 
@@ -424,7 +436,8 @@ def send_daily_forecast(test_time=None):
     now = test_time or datetime.now()
 
     for user in users:
-        if not user.notifications_enabled:
+        settings = decode_notification_settings(user.notifications_settings)
+        if not settings.get("forecast_notifications", False):
             timer_logger.debug(f"🚫 Уведомления отключены у {user.user_id}, пропускаем.")
             continue
         try:
@@ -460,22 +473,16 @@ def send_daily_forecast(test_time=None):
             timer_logger.debug(f"▸ Итоговое сообщение:\n{forecast_message}")
 
             try:
-                # 🔹 Отправляем новый прогноз
                 sent_message = bot.send_message(user.user_id, forecast_message, parse_mode="HTML")
                 timer_logger.info(f"✅ Прогноз погоды отправлен пользователю {user.user_id}.")
-
-                # 🔹 Сохраняем ID сообщения
                 update_data_field("last_bot_message", user.user_id, sent_message.message_id)
                 timer_logger.debug(f"▸ Новое декоративное сообщение сохранено: {sent_message.message_id}")
-
-                # 🔹 Проверяем, было ли открыто меню настроек
                 if get_data_field("last_settings_command", user.user_id):
                     send_settings_menu(user.user_id)
                     timer_logger.debug(f"🔄 Повторно отправлено меню настроек для пользователя {user.user_id}.")
                 else:
                     send_main_menu(user.user_id)
                     timer_logger.debug(f"🔄 Повторно отправлено главное меню для пользователя {user.user_id}.")
-
             except Exception as e:
                 timer_logger.error(f"❌ Ошибка при отправке прогноза {user.user_id}: {e}")
 
@@ -488,7 +495,7 @@ if __name__ == '__main__':
             timer_logger.info("Запуск задач проверки.")
             
             check_all_cities()
-            #ОТЛАДКА (TEST MODE)
+            # ОТЛАДКА (TEST MODE)
             # user_tz = ZoneInfo("Asia/Almaty")
             # test_time = datetime(2025, 3, 26, 6, 0, 0, tzinfo=user_tz) 
             # send_daily_forecast(test_time)
