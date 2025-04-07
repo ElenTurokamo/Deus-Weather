@@ -6,6 +6,7 @@ from logic import get_user, save_user, update_user
 from logic import *
 from weather import get_weather
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 import logging
@@ -480,7 +481,9 @@ def refresh_daily_forecast(user_id):
     if not raw_forecast:
         bot_logger.warning(f"▸ `get_today_forecast` не вернула данные для {user.preferred_city}!")
         return
-    updated_time = datetime.now().strftime("%H:%M")
+    user_tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
+    user_time = datetime.now().astimezone(user_tz)
+    updated_time = user_time.strftime("%H:%M")
     forecast_message = (
         "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
         f"[Обновлено в {updated_time}]\n"
@@ -518,7 +521,9 @@ def update_existing_forecast(user_id):
     if not raw_forecast:
         bot_logger.warning(f"▸ `get_today_forecast` не вернула данные для {user.preferred_city}!")
         return
-    updated_time = datetime.now().strftime("%H:%M")
+    user_tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
+    user_time = datetime.now().astimezone(user_tz)
+    updated_time = user_time.strftime("%H:%M")
     forecast_message = (
         "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
         f"[Обновлено в {updated_time}]\n"

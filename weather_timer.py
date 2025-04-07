@@ -92,16 +92,16 @@ def check_weather_changes(city, current_data):
         if TEST:
             timer_logger.info(f"⚡ [ТЕСТ] Эмулируем погоду для {city}")
             current_data = {
-                "temp": round(random.uniform(-10, 35), 1),
-                "feels_like": round(random.uniform(-15, 40), 1),
-                "humidity": random.randint(10, 100),
-                "wind_speed": round(random.uniform(0, 20), 1),
-                "wind_direction": random.randint(0, 360),
-                "wind_gust": round(random.uniform(0, 25), 1),
-                "pressure": random.randint(950, 1050),
-                "visibility": random.randint(1000, 10000),
-                "clouds": random.randint(0, 100),
-                "description": random.choice(["Солнечно", "Дождь", "Облачно", "Гроза"])
+                "temp": round(random.uniform(10, 10), 1),
+                "feels_like": round(random.uniform(15, 15), 1),
+                "humidity": random.randint(10, 10),
+                "wind_speed": round(random.uniform(0, 0), 1),
+                "wind_direction": random.randint(0, 0),
+                "wind_gust": round(random.uniform(0, 0), 1),
+                "pressure": random.randint(950, 950),
+                "visibility": random.randint(1000, 1000),
+                "clouds": random.randint(0, 0),
+                "description": random.choice(["Гроза"])
             }
         users = db.query(User).filter(User.preferred_city == city).all()
         timer_logger.info(f"▸ Всего пользователей для города {city}: {len(users)}")
@@ -116,6 +116,7 @@ def check_weather_changes(city, current_data):
         city_data = db.query(CheckedCities).filter_by(city_name=city).first()
         if not city_data:
             new_entry = CheckedCities(
+                city_name=city,
                 temperature=current_data["temp"],
                 feels_like=current_data["feels_like"],
                 humidity=current_data["humidity"],
@@ -144,27 +145,54 @@ def check_weather_changes(city, current_data):
         notify_users = False
         changed_params = {}
         for param in current_data:
-            if param in ["city_name", "coordinates", "wind_direction", "feels_like", "clouds"]:
+            if param in ["city_name", "coordinates", "wind_direction", "clouds"]:
                 continue
             old_value = getattr(city_data, f"last_{param}", None)
             new_value = current_data[param]
             if param == "description":
-                important_descriptions = get_threshold("description") 
-                if old_value != new_value:
-                    if old_value in important_descriptions or new_value in important_descriptions:
-                        changed_params[param] = (old_value, new_value)
+                important_descriptions = [
+                    "Проливной дождь",
+                    "Небольшой проливной дождь",
+                    "Снег",
+                    "Град",
+                    "Гроза",
+                    "Шторм",
+                    "Буря",
+                    "Сильный ветер",
+                    "Пыльная буря",
+                    "Ливень",
+                    "Дождь", 
+                    "Небольшой дождь", 
+                ]
+                if isinstance(old_value, tuple) and isinstance(new_value, tuple):
+                    old_desc, new_desc = old_value
+                else:
+                    old_desc = old_value
+                    new_desc = new_value
+
+                if old_desc != new_desc and isinstance(new_desc, str):
+                    new_desc_lower = new_desc.lower()
+                    important_descriptions_lower = [desc.lower() for desc in important_descriptions]
+
+                    if new_desc_lower in important_descriptions_lower:
+                        changed_params[param] = (old_desc, new_desc)
                         notify_users = True
-            else:
-                try:
-                    old_value = float(old_value) if old_value is not None else None
-                    new_value = float(new_value)
-                except ValueError:
-                    continue
-                if old_value is not None and abs(new_value - old_value) > get_threshold(param):
-                    changed_params[param] = (old_value, new_value)
-                    notify_users = True
+
+                else:
+                    try:
+                        old_value = float(old_value) if old_value is not None else None
+                        new_value = float(new_value) if new_value is not None else None
+                    except (ValueError, TypeError):
+                        continue
+
+                    if old_value is not None and new_value is not None:
+                        if abs(new_value - old_value) > get_threshold(param):
+                            changed_params[param] = (old_value, new_value)
+                            notify_users = True
         if notify_users:
+            timer_logger.info(f"Итоговые изменения для города {city}: {changed_params}")
             send_weather_update(users, city, changed_params, current_data)
+
         city_data.last_temperature = current_data["temp"]
         city_data.last_feels_like = current_data["feels_like"]
         city_data.last_humidity = current_data["humidity"]
@@ -196,7 +224,20 @@ def get_threshold(param):
         "wind_gust": 2,  # Изменение скорости ветра на 2 м/с
         "pressure": 5,  # Изменение давления на 5 мм рт. ст.
         "visibility": 4000,  # Изменение видимости на 500 м
-        "description": ["дождь", "снег", "град", "сильный ветер", "гроза"]
+        "description": [
+                    "Проливной дождь",
+                    "Небольшой проливной дождь",
+                    "Снег",
+                    "Град",
+                    "Гроза",
+                    "Шторм",
+                    "Буря",
+                    "Сильный ветер",
+                    "Пыльная буря",
+                    "Ливень",
+                    "Дождь", 
+                    "Небольшой дождь",
+                    ]
     }
     return thresholds.get(param, 0)
 
