@@ -89,8 +89,9 @@ def check_weather_changes(city, current_data):
     db = SessionLocal()
     try:
         timer_logger.info(f"📍 Начата проверка изменений погоды для города: {city}")
+        
         if TEST:
-            timer_logger.info(f"⚡ [ТЕСТ] Эмулируем погоду для {city}")
+            # Эмуляция данных для тестов
             current_data = {
                 "temp": round(random.uniform(-10, 40), 1),
                 "feels_like": round(random.uniform(-10, 40), 1),
@@ -103,16 +104,17 @@ def check_weather_changes(city, current_data):
                 "clouds": random.randint(0, 100),
                 "description": random.choice(["Гроза", "Переменная облачность", "Солнечно"])
             }
+        
+        # Получаем пользователей для города с уведомлениями
         users = db.query(User).filter(User.preferred_city == city).all()
-        timer_logger.info(f"▸ Всего пользователей для города {city}: {len(users)}")
         users_with_notifications = [
-            user for user in users
-            if decode_notification_settings(user.notifications_settings).get("weather_threshold_notifications", False)
+            user for user in users if decode_notification_settings(user.notifications_settings).get("weather_threshold_notifications", False)
         ]
-        timer_logger.info(f"▸ Пользователей с включёнными уведомлениями: {len(users_with_notifications)}")
         if not users_with_notifications:
-            timer_logger.info(f"▸ Сейчас нет ни одного пользователя с включенными уведомлениями. Проверка завершена.")
+            timer_logger.info(f"▸ Нет пользователей с включёнными уведомлениями для города {city}. Проверка завершена.")
             return True
+
+        # Получаем или создаём запись о городе в БД
         city_data = db.query(CheckedCities).filter_by(city_name=city).first()
         if not city_data:
             new_entry = CheckedCities(
@@ -142,30 +144,27 @@ def check_weather_changes(city, current_data):
             db.commit()
             timer_logger.info(f"✅ Город {city} добавлен в проверенные города.")
             return True
+        
+        # Сравнение данных и выявление изменений
         notify_users = False
         changed_params = {}
         for param in current_data:
             if param in ["city_name", "coordinates", "wind_direction", "clouds"]:
                 continue
+
             old_value = getattr(city_data, f"last_{param}", None)
             new_value = current_data[param]
+
             if param == "description":
                 important_descriptions = [
                     "Проливной дождь", "Небольшой проливной дождь", "Снег", "Град",
                     "Гроза", "Шторм", "Буря", "Сильный ветер", "Пыльная буря",
                     "Ливень", "Дождь", "Небольшой дождь", "Небольшой снег"
                 ]
-                if isinstance(old_value, tuple) and isinstance(new_value, tuple):
-                    old_desc, new_desc = old_value
-                else:
-                    old_desc = old_value
-                    new_desc = new_value
+                old_desc, new_desc = old_value, new_value
 
                 if old_desc != new_desc and isinstance(new_desc, str):
-                    new_desc_lower = new_desc.lower()
-                    important_descriptions_lower = [desc.lower() for desc in important_descriptions]
-
-                    if new_desc_lower in important_descriptions_lower:
+                    if new_desc.lower() in [desc.lower() for desc in important_descriptions]:
                         changed_params[param] = (old_desc, new_desc)
                         notify_users = True
             else:
@@ -175,31 +174,28 @@ def check_weather_changes(city, current_data):
                 except (ValueError, TypeError):
                     continue
 
-                if old_value is not None and new_value is not None:
-                    if abs(new_value - old_value) > get_threshold(param):
-                        changed_params[param] = (old_value, new_value)
-                        notify_users = True
-        if notify_users:
-            timer_logger.info(f"Итоговые изменения для города {city}: {changed_params}")
-            send_weather_update(users, city, changed_params, current_data)
+                if old_value is not None and new_value is not None and abs(new_value - old_value) > get_threshold(param):
+                    changed_params[param] = (old_value, new_value)
+                    notify_users = True
 
-        city_data.last_temperature = current_data["temp"]
-        city_data.last_feels_like = current_data["feels_like"]
-        city_data.last_humidity = current_data["humidity"]
-        city_data.last_wind_speed = current_data["wind_speed"]
-        city_data.last_wind_direction = current_data["wind_direction"]
-        city_data.last_wind_gust = current_data["wind_gust"]
-        city_data.last_pressure = current_data["pressure"]
-        city_data.last_visibility = current_data["visibility"]
-        city_data.last_clouds = current_data["clouds"]
-        city_data.last_description = current_data["description"]
+        if notify_users:
+            timer_logger.info(f"Изменения для города {city}: {changed_params}")
+            send_weather_update(users_with_notifications, city, changed_params, current_data)
+
+        # Обновление данных о погоде в базе
+        for param in current_data:
+            setattr(city_data, f"last_{param}", getattr(city_data, param, None))
+            setattr(city_data, param, current_data[param])
+
         db.commit()
         timer_logger.info(f"✅ Данные о городе {city} успешно обновлены.")
         return True
+
     except Exception as e:
         db.rollback()
         timer_logger.error(f"✦ Ошибка при обработке города {city}: {e}")
         return False
+
     finally:
         db.close()
         timer_logger.info(f"▸ Соединение с БД для города {city} закрыто.")
@@ -214,20 +210,12 @@ def get_threshold(param):
         "wind_gust": 2,  # Изменение скорости ветра на 2 м/с
         "pressure": 5,  # Изменение давления на 5 мм рт. ст.
         "visibility": 4000,  # Изменение видимости на 500 м
+        "feels_like": 3.0,
+        "clouds": 20,
         "description": [
-                    "Проливной дождь",
-                    "Небольшой проливной дождь",
-                    "Снег",
-                    "Град",
-                    "Гроза",
-                    "Шторм",
-                    "Буря",
-                    "Сильный ветер",
-                    "Пыльная буря",
-                    "Ливень",
-                    "Дождь", 
-                    "Небольшой дождь",
-                    "Небольшой снег"
+                    "Проливной дождь", "Небольшой проливной дождь", "Снег",
+                    "Град", "Гроза", "Шторм", "Буря", "Сильный ветер",
+                    "Пыльная буря", "Ливень","Дождь","Небольшой дождь", "Небольшой снег"
                     ]
     }
     return thresholds.get(param, 0)
@@ -335,13 +323,17 @@ def send_weather_update(users, city, changes, current_data):
             "visibility": ("Видимость", int(current_data.get("visibility", 0)), " м")
         }
 
-        formatted_params = {}  # Словарь для хранения параметров с единицами измерения
+        formatted_params = {} 
 
-        # Первый проход: обрабатываем все параметры с единицами измерения
         for param, value in current_data.items():
             if param == "temperature":
                 translated_unit = UNIT_TRANSLATIONS["temp"].get(user.temp_unit, user.temp_unit)
-                formatted_params[param] = f"{convert_temperature(value, user.temp_unit)} {translated_unit}"
+                formatted_value = round(convert_temperature(value, user.temp_unit), 1)
+                formatted_params[param] = f"{formatted_value} {translated_unit}"
+            elif param == "feels_like":
+                translated_unit = UNIT_TRANSLATIONS["temp"].get(user.temp_unit, user.temp_unit)
+                formatted_value = round(convert_temperature(value, user.temp_unit), 1)
+                formatted_params[param] = f"{formatted_value} {translated_unit}"
             elif param == "pressure":
                 translated_unit = UNIT_TRANSLATIONS["pressure"].get(user.pressure_unit, user.pressure_unit)
                 formatted_params[param] = f"{convert_pressure(value, user.pressure_unit)} {translated_unit}"
@@ -363,8 +355,8 @@ def send_weather_update(users, city, changes, current_data):
             if not tracked_params.get(param, False):
                 continue
 
-            arrow = "▸"  # Значок по умолчанию
-            value_str = formatted_params.get(param, f"{value}{unit}")  # Значение по умолчанию
+            arrow = "▸" 
+            value_str = formatted_params.get(param, f"{value}{unit}") 
 
             if param in changes:
                 old, new = changes[param]
@@ -379,12 +371,22 @@ def send_weather_update(users, city, changes, current_data):
                         else:
                             value_str = f"{old.capitalize()} ➝ {new.capitalize()}"
                         arrow = ""
-                elif param == "temperature":
-                    old = convert_temperature(old, user.temp_unit)
-                    new = convert_temperature(new, user.temp_unit)
+                elif param == "feels_like":
+                    old = round(convert_temperature(old, user.temp_unit), 1)
+                    new = round(convert_temperature(new, user.temp_unit), 1)
                     if old != new:
                         value_str = f"<b>{old} ➝ {new}{unit}</b>"
-
+                        arrow = "⇑" if new > old else "⇓"
+                    else:
+                        arrow = ""
+                elif param == "temperature":
+                    old = round(convert_temperature(old, user.temp_unit), 1)
+                    new = round(convert_temperature(new, user.temp_unit), 1)
+                    if old != new:
+                        value_str = f"<b>{old} ➝ {new}{unit}</b>"
+                        arrow = "⇑" if new > old else "⇓"
+                    else:
+                        arrow = ""
                 elif param == "pressure":
                     old = convert_pressure(old, user.pressure_unit)
                     new = convert_pressure(new, user.pressure_unit)
@@ -406,7 +408,7 @@ def send_weather_update(users, city, changes, current_data):
                 elif param == "visibility":
                     old, new = int(old), int(new)
                     if old != new:
-                        value_str = f"<b>{old} м ➝ {new} м</b>"
+                        value_str = f"<b>{old} ➝ {new} м</b>"
 
                 elif param in ("humidity", "precipitation"):
                     old, new = int(old), int(new)
@@ -415,10 +417,8 @@ def send_weather_update(users, city, changes, current_data):
 
                 arrow = trend_emoji
 
-            # Формируем сообщение
             message += f"{arrow} {label}: {value_str}\n"
 
-        # Добавляем подпись к сообщению
         message += "\n      ⟪ Deus Weather ⟫"
 
         bot.send_message(user.user_id, message, parse_mode="HTML")
