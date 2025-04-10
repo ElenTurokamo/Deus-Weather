@@ -92,16 +92,16 @@ def check_weather_changes(city, current_data):
         if TEST:
             timer_logger.info(f"⚡ [ТЕСТ] Эмулируем погоду для {city}")
             current_data = {
-                "temp": round(random.uniform(10, 10), 1),
-                "feels_like": round(random.uniform(15, 15), 1),
-                "humidity": random.randint(10, 10),
-                "wind_speed": round(random.uniform(0, 0), 1),
-                "wind_direction": random.randint(0, 0),
-                "wind_gust": round(random.uniform(0, 0), 1),
-                "pressure": random.randint(950, 950),
-                "visibility": random.randint(1000, 1000),
-                "clouds": random.randint(0, 0),
-                "description": random.choice(["Гроза"])
+                "temp": round(random.uniform(-10, 40), 1),
+                "feels_like": round(random.uniform(-10, 40), 1),
+                "humidity": random.randint(10, 100),
+                "wind_speed": round(random.uniform(0, 10), 1),
+                "wind_direction": random.randint(0, 25),
+                "wind_gust": round(random.uniform(0, 10), 1),
+                "pressure": random.randint(950, 1200),
+                "visibility": random.randint(1000, 10000),
+                "clouds": random.randint(0, 100),
+                "description": random.choice(["Гроза", "Переменная облачность", "Солнечно"])
             }
         users = db.query(User).filter(User.preferred_city == city).all()
         timer_logger.info(f"▸ Всего пользователей для города {city}: {len(users)}")
@@ -111,7 +111,7 @@ def check_weather_changes(city, current_data):
         ]
         timer_logger.info(f"▸ Пользователей с включёнными уведомлениями: {len(users_with_notifications)}")
         if not users_with_notifications:
-            timer_logger.info(f"▸ Уведомления для города {city} отключены. Проверка завершена.")
+            timer_logger.info(f"▸ Сейчас нет ни одного пользователя с включенными уведомлениями. Проверка завершена.")
             return True
         city_data = db.query(CheckedCities).filter_by(city_name=city).first()
         if not city_data:
@@ -151,18 +151,9 @@ def check_weather_changes(city, current_data):
             new_value = current_data[param]
             if param == "description":
                 important_descriptions = [
-                    "Проливной дождь",
-                    "Небольшой проливной дождь",
-                    "Снег",
-                    "Град",
-                    "Гроза",
-                    "Шторм",
-                    "Буря",
-                    "Сильный ветер",
-                    "Пыльная буря",
-                    "Ливень",
-                    "Дождь", 
-                    "Небольшой дождь", 
+                    "Проливной дождь", "Небольшой проливной дождь", "Снег", "Град",
+                    "Гроза", "Шторм", "Буря", "Сильный ветер", "Пыльная буря",
+                    "Ливень", "Дождь", "Небольшой дождь", "Небольшой снег"
                 ]
                 if isinstance(old_value, tuple) and isinstance(new_value, tuple):
                     old_desc, new_desc = old_value
@@ -177,18 +168,17 @@ def check_weather_changes(city, current_data):
                     if new_desc_lower in important_descriptions_lower:
                         changed_params[param] = (old_desc, new_desc)
                         notify_users = True
+            else:
+                try:
+                    old_value = float(old_value) if old_value is not None else None
+                    new_value = float(new_value) if new_value is not None else None
+                except (ValueError, TypeError):
+                    continue
 
-                else:
-                    try:
-                        old_value = float(old_value) if old_value is not None else None
-                        new_value = float(new_value) if new_value is not None else None
-                    except (ValueError, TypeError):
-                        continue
-
-                    if old_value is not None and new_value is not None:
-                        if abs(new_value - old_value) > get_threshold(param):
-                            changed_params[param] = (old_value, new_value)
-                            notify_users = True
+                if old_value is not None and new_value is not None:
+                    if abs(new_value - old_value) > get_threshold(param):
+                        changed_params[param] = (old_value, new_value)
+                        notify_users = True
         if notify_users:
             timer_logger.info(f"Итоговые изменения для города {city}: {changed_params}")
             send_weather_update(users, city, changed_params, current_data)
@@ -237,6 +227,7 @@ def get_threshold(param):
                     "Ливень",
                     "Дождь", 
                     "Небольшой дождь",
+                    "Небольшой снег"
                     ]
     }
     return thresholds.get(param, 0)
@@ -326,7 +317,7 @@ def send_weather_update(users, city, changes, current_data):
             return "🌦️" 
         
         emoji = get_weather_emoji(current_data, changes)
-        header = f"<blockquote>{emoji} Внимание!⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀</blockquote>\nПогода в г.{city} изменилась!"
+        header = f"<blockquote>{emoji} Внимание!                              </blockquote>\nПогода в г.{city} изменилась!"
         line = "─" * min(len(header), 21)
         message = f"<b>{header}</b>\n{line}\n"
 
@@ -444,38 +435,29 @@ def send_weather_update(users, city, changes, current_data):
 def check_all_cities():
     """Проверяет все города, для которых включены уведомления."""
     db = SessionLocal()
-
     users = db.query(User.preferred_city, User.notifications_settings).distinct().all()
-
     cities = set()
     for city, settings in users:
         if city:
             decoded_settings = decode_notification_settings(settings)
             if decoded_settings.get("weather_threshold_notifications", False):
                 cities.add(city)
-
     checked_cities = set()
     attempt = 1
     max_attempts = 3
-
     while cities - checked_cities and attempt <= max_attempts:
         remaining_cities = cities - checked_cities 
         timer_logger.info(f"🔄 Попытка #{attempt}: Проверяем {len(remaining_cities)} оставшихся городов...")
-
         for city in remaining_cities:
             weather_data = get_weather(city)
             if weather_data:
                 success = check_weather_changes(city, weather_data)
-
                 if success:
                     checked_cities.add(city)  
                     timer_logger.info(f"✅ {city} добавлен в проверенные города.\n")
-
         attempt += 1  
-
     if cities - checked_cities:
         timer_logger.warning(f"⚠️ Остались непроверенные города: {cities - checked_cities}")
-
     db.close() 
 
 
