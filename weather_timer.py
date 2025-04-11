@@ -149,7 +149,7 @@ def check_weather_changes(city, current_data):
         notify_users = False
         changed_params = {}
         for param in current_data:
-            if param in ["city_name", "coordinates", "wind_direction", "clouds"]:
+            if param in ["city_name", "feels_like", "coordinates", "wind_direction", "clouds"]:
                 continue
 
             old_value = getattr(city_data, f"last_{param}", None)
@@ -210,7 +210,6 @@ def get_threshold(param):
         "wind_gust": 2,  # Изменение скорости ветра на 2 м/с
         "pressure": 5,  # Изменение давления на 5 мм рт. ст.
         "visibility": 4000,  # Изменение видимости на 500 м
-        "feels_like": 3.0,
         "clouds": 20,
         "description": [
                     "Проливной дождь", "Небольшой проливной дождь", "Снег",
