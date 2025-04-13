@@ -72,6 +72,7 @@ class CheckedCities(Base):
     last_visibility = Column(Integer, nullable=True)
     last_description = Column(String(255), nullable=True)
     last_clouds = Column(Integer, nullable=True) 
+    last_precipitation = Column(Float, nullable=True) 
 
     temperature = Column(Float, nullable=False)
     feels_like = Column(Float, nullable=True)
@@ -83,5 +84,18 @@ class CheckedCities(Base):
     visibility = Column(Integer, nullable=True)
     description = Column(String(255), nullable=True)
     clouds = Column(Integer, nullable=True) 
+    precipitation = Column(Float, nullable=True) 
 
     last_checked = Column(DateTime, server_default=func.now())
+
+
+class LocalVars(Base):
+    __tablename__ = 'local_vars'
+
+    user_id = Column(BigInteger, primary_key=True)
+    last_menu_message = Column(JSON, nullable=True)
+    last_settings_command = Column(JSON, nullable=True)
+    last_user_command = Column(JSON, nullable=True)
+    last_format_settings_menu = Column(JSON, nullable=True)
+    last_bot_message = Column(JSON, nullable=True)
+    last_daily_forecast = Column(JSON, nullable=True)

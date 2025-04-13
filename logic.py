@@ -3,7 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.sql import func
 from telebot import types
 from weather import fetch_today_forecast, fetch_weekly_forecast, get_city_timezone
-from models import User
+from models import User, LocalVars
 from datetime import date, timedelta, datetime
 
 import os
@@ -75,6 +75,56 @@ def update_user(user_id: int, **kwargs):
     return True
 
 
+def initialize_json_from_db():
+    """Инициализирует JSON-файл данными всех пользователей из БД."""
+    db = SessionLocal()
+    all_vars = db.query(LocalVars).all()
+    db.close()
+
+    # Заготовка под структуру данных
+    data = {
+        "last_menu_message": {},
+        "last_settings_command": {},
+        "last_user_command": {},
+        "last_format_settings_menu": {},
+        "last_bot_message": {},
+        "last_daily_forecast": {},
+        "stop_event": False
+    }
+
+    for vars_row in all_vars:
+        uid = str(vars_row.user_id)
+        data["last_menu_message"][uid] = vars_row.last_menu_message
+        data["last_settings_command"][uid] = vars_row.last_settings_command
+        data["last_user_command"][uid] = vars_row.last_user_command
+        data["last_format_settings_menu"][uid] = vars_row.last_format_settings_menu
+        data["last_bot_message"][uid] = vars_row.last_bot_message
+        data["last_daily_forecast"][uid] = vars_row.last_daily_forecast
+
+    save_data(data)
+
+
+def sync_json_to_db(user_id):
+    """Сохраняет данные конкретного пользователя в БД"""
+    db = SessionLocal()
+    data = load_data()
+
+    local_vars = db.query(LocalVars).filter(LocalVars.user_id == user_id).first()
+    if not local_vars:
+        local_vars = LocalVars(user_id=user_id)
+
+    local_vars.last_menu_message = data.get("last_menu_message", {}).get(str(user_id))
+    local_vars.last_settings_command = data.get("last_settings_command", {}).get(str(user_id))
+    local_vars.last_user_command = data.get("last_user_command", {}).get(str(user_id))
+    local_vars.last_format_settings_menu = data.get("last_format_settings_menu", {}).get(str(user_id))
+    local_vars.last_bot_message = data.get("last_bot_message", {}).get(str(user_id))
+    local_vars.last_daily_forecast = data.get("last_daily_forecast", {}).get(str(user_id))
+
+    db.add(local_vars)
+    db.commit()
+    db.close()
+
+
 #ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О ПОЛЬЗОВАТЕЛЕ
 def get_user(user_id):
     """Возвращает пользователя, но не оставляет сессию открытой."""
@@ -122,6 +172,7 @@ def save_user(user_id, username=None, preferred_city=None):
         logging.debug(f"Данные пользователя с ID {user_id} ({username}) обновлены.")
     db.close()
 
+
 #ДЕКОДЕРЫ БД
 def decode_tracked_params(tracked_params):
     """Декодирует JSON-строку или возвращает словарь, иначе — значение по умолчанию."""
@@ -138,7 +189,6 @@ def decode_tracked_params(tracked_params):
         "wind_gust": False,     
         "clouds": False 
     }
-
     if isinstance(tracked_params, str):
         try:
             return json.loads(tracked_params)
@@ -151,6 +201,7 @@ def decode_tracked_params(tracked_params):
         logging.warning("❌ Некорректный формат tracked_params. Используем значения по умолчанию.")
         return default_params
     
+
 def decode_notification_settings(notification_settings):
     """Декодирует JSON-строку или возвращает словарь, иначе — значение по умолчанию."""
     default_settings = {
@@ -158,7 +209,6 @@ def decode_notification_settings(notification_settings):
         "forecast_notifications": True,
         "weather_threshold_notifications": False
     }
-
     if isinstance(notification_settings, str):
         try:
             return json.loads(notification_settings)
@@ -170,28 +220,14 @@ def decode_notification_settings(notification_settings):
     else:
         logging.warning("❌ Некорректный формат notification_settings. Используем значения по умолчанию.")
         return default_settings
-     
-#ОБЩЕЕ ХРАНИЛИЩЕ СЛОВАРЕЙ
-DATA_FILE = "data_store.json"
-_lock = threading.Lock()
 
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w", encoding="utf-8") as file:
-        json.dump({
-            "last_menu_message": {},
-            "last_settings_command": {},
-            "last_bot_message": {},
-            "last_user_command": {},
-            "last_daily_forecast": {},
-            "last_format_settings_menu": {},
-            "stop_event": False
-        }, file, ensure_ascii=False, indent=4)
 
 def load_data():
     """Загружает данные из JSON-файла."""
     with _lock:
         with open(DATA_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
+        
 
 def save_data(data):
     """Сохраняет данные в JSON-файл."""
@@ -199,33 +235,64 @@ def save_data(data):
         with open(DATA_FILE, "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
 
+
+#ОБЩЕЕ ХРАНИЛИЩЕ СЛОВАРЕЙ
+DATA_FILE = "data_store.json"
+_lock = threading.Lock()
+if not os.path.exists(DATA_FILE):
+    initialize_json_from_db()
+    if not os.path.exists(DATA_FILE): 
+        with open(DATA_FILE, "w", encoding="utf-8") as file:
+            json.dump({
+                "last_menu_message": {},
+                "last_settings_command": {},
+                "last_bot_message": {},
+                "last_user_command": {},
+                "last_daily_forecast": {},
+                "last_format_settings_menu": {},
+                "stop_event": False
+            }, file, ensure_ascii=False, indent=4)
+
+
 def get_data(key):
     """Получает данные из хранилища по ключу."""
     data = load_data()
     return data.get(key, {})
 
-def set_data(key, value):
-    """Устанавливает значение для конкретного ключа в хранилище."""
+
+def set_data(key, value, user_id=None):
+    """Устанавливает значение и сохраняет для указанного пользователя."""
     data = load_data()
-    data[key] = value
+    if user_id is not None:
+        if key not in data:
+            data[key] = {}
+        data[key][str(user_id)] = value
+    else:
+        data[key] = value
     save_data(data)
+    if user_id is not None:
+        sync_json_to_db(user_id)
 
 def update_data_field(dict_key, sub_key, value):
-    """Обновляет конкретное поле в словаре внутри хранилища."""
+    """Обновляет поле внутри словаря и синхронизирует с БД"""
     data = load_data()
     if dict_key not in data:
         data[dict_key] = {}
     data[dict_key][str(sub_key)] = value
     save_data(data)
+    sync_json_to_db(int(sub_key))  
+
 
 def get_data_field(dict_key, sub_key):
     """Получает значение конкретного поля из словаря в хранилище."""
     data = load_data()
     return data.get(dict_key, {}).get(str(sub_key))
 
+
 def is_stop_event_set():
     """Проверяет, установлен ли stop_event."""
     return get_data("stop_event")
+
 
 def set_stop_event(value):
     """Устанавливает значение stop_event."""

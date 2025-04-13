@@ -107,12 +107,6 @@ def settings_option(chat_id, reply_markup=None):
     return settings_opt.message_id
 
 
-def send_loading_message(chat_id):
-    """Отправляет сообщение о загрузке и сразу его удаляет."""
-    loading_message = bot.send_message(chat_id, "Загрузка...")
-    bot.delete_message(chat_id, loading_message.message_id)
-
-
 def send_main_menu(chat_id):
     """Отправка главного меню пользователю."""
     delete_last_menu_message(chat_id)
@@ -196,10 +190,12 @@ def format_forecast(day, user):
         parts.append(f"▸ Погода: {day['description']}")
     if tracked_params.get("temperature", False) and "temp_min" in day and "temp_max" in day:
         temp_unit = UNIT_TRANSLATIONS['temp'][user.temp_unit]
-        parts.append(
-            f"▸ Температура: от {round(convert_temperature(day['temp_min'], user.temp_unit))}{temp_unit} "
-            f"до {round(convert_temperature(day['temp_max'], user.temp_unit))}{temp_unit}"
-        )
+        temp_min = round(convert_temperature(day['temp_min'], user.temp_unit))
+        temp_max = round(convert_temperature(day['temp_max'], user.temp_unit))
+        if temp_min == temp_max:
+            parts.append(f"▸ Температура: {temp_min}{temp_unit}")
+        else:
+            parts.append(f"▸ Температура: от {temp_min}{temp_unit} до {temp_max}{temp_unit}")
     if tracked_params.get("feels_like", False) and "feels_like" in day:
         temp_unit = UNIT_TRANSLATIONS['temp'][user.temp_unit]
         parts.append(
@@ -229,6 +225,8 @@ def format_forecast(day, user):
         )
     if tracked_params.get("clouds", False) and "clouds" in day:
         parts.append(f"▸ Облачность: {day['clouds']}%")
+    if tracked_params.get("visibility", False) and "visibility" in day:
+        parts.append(f"▸ Видимость: {int(day['visibility'])} м")
     return "\n".join(parts)
 
 
