@@ -29,7 +29,7 @@ timer_start_time = time.time()
 rounded_time = datetime.fromtimestamp(round(timer_start_time), timezone.utc)
 
 #ОТЛАДКА
-TEST = True  #тестовый режим для проверки уведомлений (True - вкл, False - выкл.)
+TEST = False  #тестовый режим для проверки уведомлений (True - вкл, False - выкл.)
 
 #ПОДКЛЮЧЕНИЕ К БД
 DATABASE_URL = os.getenv("DATABASE_URL")
