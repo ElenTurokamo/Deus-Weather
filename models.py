@@ -87,6 +87,7 @@ class CheckedCities(Base):
     precipitation = Column(Float, nullable=True) 
 
     last_checked = Column(DateTime, server_default=func.now())
+    previous_notify_time = Column(DateTime, nullable=True)
 
 
 class LocalVars(Base):
@@ -99,3 +100,4 @@ class LocalVars(Base):
     last_format_settings_menu = Column(JSON, nullable=True)
     last_bot_message = Column(JSON, nullable=True)
     last_daily_forecast = Column(JSON, nullable=True)
+    last_weather_update = Column(JSON, nullable=True)

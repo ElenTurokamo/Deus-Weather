@@ -29,7 +29,7 @@ timer_start_time = time.time()
 rounded_time = datetime.fromtimestamp(round(timer_start_time), timezone.utc)
 
 #ОТЛАДКА
-TEST = False  #тестовый режим для проверки уведомлений (True - вкл, False - выкл.)
+TEST = True  #тестовый режим для проверки уведомлений (True - вкл, False - выкл.)
 
 #ПОДКЛЮЧЕНИЕ К БД
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -43,6 +43,7 @@ load_dotenv()
 
 #СЛОВАРИ
 stop_event = Event()
+changed_cities_cache = {}
 
 #ЛОГИРОВАНИЕ
 LOG_DIR = "logs"
@@ -193,7 +194,11 @@ def check_weather_changes(city, current_data):
                     full_changed_params[key] = (db_value, current_value)
 
             timer_logger.info(f"📢 Важное изменение description для города {city}: {changed_params}")
-            send_weather_update(users_with_notifications, city, full_changed_params, current_data)
+
+            changed_cities_cache[city] = {
+                "current_data": current_data,
+                "changed_params": full_changed_params
+            }
         else:
             timer_logger.info(f"▸ Нет критических изменений погоды для города {city}")
 
@@ -247,69 +252,32 @@ def get_threshold(param):
     }
     return thresholds.get(param, 0)
 
-def get_weather_emoji(current_data, changes):
-    """Выбирает наиболее важный смайлик в зависимости от изменений погоды."""
+def get_weather_emoji(current_data):
+    """Выбирает эмодзи на основе описания погоды (description)."""
 
-    priority = {
-        "storm": (5, "⛈️"),  # Гроза, буря
-        "hurricane_wind": (5, "🌪️"),  # Ураганный ветер (15+ м/с)
-        "extreme_heat": (5, "🔥"),  # Очень жарко (30+°C)
-        "extreme_cold": (5, "❄️"),  # Очень холодно (-15°C)
-        "pressure_drop": (5, "‼️"),  # Резкое падение давления
-
-        "strong_wind": (4, "💨"),  # Сильный ветер (10-15 м/с)
-        "heavy_rain": (4, "☔"),  # Ливень
-        "big_temp_change": (4, "🌡️"),  # Резкий скачок температуры (±10°C)
-        "low_visibility": (4, "🌫️"),  # Сильный туман
-
-        "cloudy": (3, "🌦️"),  # Переменная облачность
-        "humidity_increase": (2, "💧"),  # Повышенная влажность (80+%)
-        "small_pressure_change": (2, "📉"),  # Незначительное изменение давления
+    description_emoji_map = {
+        "гроза": "⛈️",
+        "буря": "⛈️",
+        "шторм": "⛈️",
+        "сильный ветер": "💨",
+        "пыльная буря": "🌪️",
+        "проливной дождь": "☔",
+        "небольшой проливной дождь": "☔",
+        "ливень": "☔",
+        "дождь": "🌧️",
+        "небольшой дождь": "🌦️",
+        "снег": "🌨️",
+        "небольшой снег": "🌨️",
+        "град": "🌨️",
     }
 
-    detected_events = []
+    description = current_data.get("description", "").lower()
 
-    if "wind_speed" in changes:
-        old, new = changes["wind_speed"]
-        if new >= 15:
-            detected_events.append("hurricane_wind")
-        elif new >= 10:
-            detected_events.append("strong_wind")
+    for key, emoji in description_emoji_map.items():
+        if key in description:
+            return emoji
 
-    if "temp" in changes:
-        old, new = changes["temp"]
-        diff = abs(new - old)
-        if new >= 30:
-            detected_events.append("extreme_heat")
-        elif new <= -15:
-            detected_events.append("extreme_cold")
-        elif diff >= 10:
-            detected_events.append("big_temp_change")
-
-    if "pressure" in changes:
-        old, new = changes["pressure"]
-        if abs(new - old) > 15:
-            detected_events.append("pressure_drop")
-        elif abs(new - old) > 5:
-            detected_events.append("small_pressure_change")
-
-    if "description" in current_data:
-        description = current_data["description"].lower()
-        if "гроза" in description or "буря" in description:
-            detected_events.append("storm")
-        if "дождь" in description and "ливень" in description:
-            detected_events.append("heavy_rain")
-
-    if "visibility" in changes:
-        old, new = changes["visibility"]
-        if new < 1000:
-            detected_events.append("low_visibility")
-
-    if detected_events:
-        highest_priority_event = max(detected_events, key=lambda event: priority[event][0])
-        return priority[highest_priority_event][1]
-
-    return "🌦️" 
+    return "🌤️"
 
 def send_weather_update(users, city, changes, current_data):
     """Отправляет уведомления пользователям о погоде, сравнивая все параметры с данными в БД."""
@@ -339,7 +307,7 @@ def send_weather_update(users, city, changes, current_data):
                 timer_logger.warning(f"⚠ Не удалось удалить декоративное сообщение для {chat_id}: {e}")
 
         # Заголовок с эмодзи и сообщением об изменении погоды
-        emoji = get_weather_emoji(current_data, changes)
+        emoji = get_weather_emoji(current_data)
         header = f"<blockquote>{emoji} Внимание!</blockquote>\nПогода в г.{city} изменилась!"
         message = f"<b>{header}</b>\n{'─' * min(len(header), 21)}\n"
 
@@ -463,11 +431,11 @@ def send_weather_update(users, city, changes, current_data):
         # Завершающая строка
         message += "\n      ⟪ Deus Weather ⟫"
 
-        # Отправляем сообщение
-        bot.send_message(chat_id, message, parse_mode="HTML")
+        delete_previous_weather_notification(chat_id)
+        sent_msg = bot.send_message(chat_id, message, parse_mode="HTML")
+        update_data_field("last_weather_update", chat_id, sent_msg.message_id)
         timer_logger.info(f"▸ Уведомление отправлено пользователю {chat_id}:\n{message}")
 
-        # Отправляем повторно меню (в зависимости от последней команды)
         if get_data_field("last_settings_command", chat_id):
             send_settings_menu(chat_id)
         else:
@@ -475,34 +443,75 @@ def send_weather_update(users, city, changes, current_data):
 
     db.close()  # Закрываем соединение с БД
 
+
+def delete_previous_weather_notification(chat_id):
+    """Удаляет предыдущее уведомление об изменении погоды, если оно есть."""
+    last_weather_msg_id = get_data_field("last_weather_update", chat_id)
+    if last_weather_msg_id:
+        try:
+            bot.delete_message(chat_id, last_weather_msg_id)
+            update_data_field("last_weather_update", chat_id, None)
+            timer_logger.info(f"🗑 Предыдущее уведомление удалено у пользователя {chat_id}.")
+        except Exception as e:
+            timer_logger.warning(f"⚠ Не удалось удалить предыдущее уведомление у {chat_id}: {e}")
+
+
 @safe_execute
 def check_all_cities():
-    """Проверяет все города, для которых включены уведомления."""
+    """Проверяет все города, собирает изменения и рассылает уведомления пользователям."""
     db = SessionLocal()
-    users = db.query(User.preferred_city, User.notifications_settings).distinct().all()
-    cities = set()
-    for city, settings in users:
-        if city:
-            decoded_settings = decode_notification_settings(settings)
-            if decoded_settings.get("weather_threshold_notifications", False):
-                cities.add(city)
+    users = db.query(User).all()
+    cities_to_check = set()
+
+    for user in users:
+        if user.preferred_city:
+            settings = decode_notification_settings(user.notifications_settings)
+            if settings.get("weather_threshold_notifications", False):
+                cities_to_check.add(user.preferred_city)
+
     checked_cities = set()
-    attempt = 1
     max_attempts = 3
-    while cities - checked_cities and attempt <= max_attempts:
-        remaining_cities = cities - checked_cities 
-        timer_logger.info(f"🔄 Попытка #{attempt}: Проверяем {len(remaining_cities)} оставшихся городов...")
-        for city in remaining_cities:
+
+    for attempt in range(1, max_attempts + 1):
+        remaining = cities_to_check - checked_cities
+        if not remaining:
+            break
+        timer_logger.info(f"🔄 Попытка #{attempt}: осталось проверить {len(remaining)} городов.")
+        for city in remaining:
             weather_data = get_weather(city)
-            if weather_data:
-                success = check_weather_changes(city, weather_data)
-                if success:
-                    checked_cities.add(city)  
-                    timer_logger.info(f"✅ {city} добавлен в проверенные города.\n")
-        attempt += 1  
-    if cities - checked_cities:
-        timer_logger.warning(f"⚠️ Остались непроверенные города: {cities - checked_cities}")
-    db.close() 
+            if weather_data and check_weather_changes(city, weather_data):
+                checked_cities.add(city)
+
+    if cities_to_check - checked_cities:
+        timer_logger.warning(f"⚠️ Не удалось проверить города: {cities_to_check - checked_cities}")
+
+    # 📬 Рассылаем уведомления пользователям
+    for user in users:
+        city = user.preferred_city
+        if not city or city not in changed_cities_cache:
+            continue
+
+        settings = decode_notification_settings(user.notifications_settings)
+        if not settings.get("weather_threshold_notifications", False):
+            continue
+
+        city_data = db.query(CheckedCities).filter_by(city_name=city).first()
+
+        if city_data and city_data.previous_notify_time:
+            time_diff = datetime.now(timezone.utc) - city_data.previous_notify_time
+            if time_diff < timedelta(hours=3):
+                timer_logger.info(f"⏱ Город {city} пропущен — последнее уведомление было {time_diff} назад.")
+                continue
+
+        city_changes = changed_cities_cache[city]
+        send_weather_update([user], city, city_changes["changed_params"], city_changes["current_data"])
+
+        if city_data:
+            city_data.previous_notify_time = datetime.now(timezone.utc)
+            db.commit()
+
+    db.close()
+    changed_cities_cache.clear()
 
 
 #ТАЙМЕР ЧЕКЕРА

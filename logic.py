@@ -89,6 +89,7 @@ def initialize_json_from_db():
         "last_format_settings_menu": {},
         "last_bot_message": {},
         "last_daily_forecast": {},
+        "last_weather_update": {},
         "stop_event": False
     }
 
@@ -100,6 +101,7 @@ def initialize_json_from_db():
         data["last_format_settings_menu"][uid] = vars_row.last_format_settings_menu
         data["last_bot_message"][uid] = vars_row.last_bot_message
         data["last_daily_forecast"][uid] = vars_row.last_daily_forecast
+        data["last_weather_update"][uid] = vars_row.last_weather_update
 
     save_data(data)
 
@@ -119,6 +121,7 @@ def sync_json_to_db(user_id):
     local_vars.last_format_settings_menu = data.get("last_format_settings_menu", {}).get(str(user_id))
     local_vars.last_bot_message = data.get("last_bot_message", {}).get(str(user_id))
     local_vars.last_daily_forecast = data.get("last_daily_forecast", {}).get(str(user_id))
+    local_vars.last_weather_update = data.get("last_weather_update", {}).get(str(user_id))
 
     db.add(local_vars)
     db.commit()
@@ -250,6 +253,7 @@ if not os.path.exists(DATA_FILE):
                 "last_user_command": {},
                 "last_daily_forecast": {},
                 "last_format_settings_menu": {},
+                "last_weather_update": {},
                 "stop_event": False
             }, file, ensure_ascii=False, indent=4)
 
