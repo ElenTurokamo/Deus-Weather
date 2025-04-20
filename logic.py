@@ -1,8 +1,9 @@
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import create_engine
 from sqlalchemy.sql import func
+from sqlalchemy.pool import QueuePool
 from telebot import types
-from weather import fetch_today_forecast, fetch_weekly_forecast, get_city_timezone
+from weather import fetch_today_forecast, fetch_weekly_forecast, fetch_tomorrow_forecast, get_city_timezone
 from models import User, LocalVars
 from datetime import date, timedelta, datetime
 
@@ -48,7 +49,7 @@ WIND_DIRECTIONS = {
 
 #ВЗАИМОДЕЙСТВИЕ С БД
 DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL, echo=False)
+engine = create_engine(DATABASE_URL, poolclass=QueuePool, pool_recycle=280, pool_pre_ping=True, echo=False)
 SessionLocal = sessionmaker(bind=engine)
 
 def update_user(user_id: int, **kwargs):
@@ -436,6 +437,7 @@ def generate_forecast_keyboard():
     """Создает клавиатуру для сообщения с меню прогноза погоды"""
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
+    keyboard.add(types.InlineKeyboardButton("🌧 Завтра", callback_data="forecast_tomorrow"))
     keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
     keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_from_forecast_menu"))
     return keyboard
@@ -515,6 +517,7 @@ def generate_unit_selection_keyboard(current_value, unit_type):
     keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="return_to_format_settings"))
     return keyboard
 
+
 def format_weather_data(data, user):
     """
     Форматирует погодные данные с учётом единиц измерения и настроек пользователя.
@@ -560,6 +563,7 @@ def format_weather_data(data, user):
 
     return weather_text + "\n      ⟪ Deus Weather ⟫"
 
+
 def format_change(label, old_value, new_value, unit=""):
     """Форматирует изменения данных, добавляя стрелки при изменении значений."""
     if old_value is None or old_value != new_value:
@@ -567,16 +571,19 @@ def format_change(label, old_value, new_value, unit=""):
         return f"<b>{label}: {new_value}{unit} {arrow}</b>"
     return f"{label}: {new_value}{unit}"
 
+
 #КОНВЕРТАЦИЯ ОСАДКОВ В %
 def convert_precipitation_to_percent(precipitation_mm):
     if precipitation_mm > 0:
         return min(int(precipitation_mm * 100), 100)  
     return 0
 
+
 #ОБРАБОТЧИК КОМАНД
 def is_valid_command(text):
-    valid_commands = ["/start", "/weather", "/changecity", "🌎 Узнать погоду", "📅 Прогноз погоды", "⚙️ Настройки"]
+    valid_commands = ["/start", "/weather", "/changecity", "🌎 Погода сегодня", "📅 Прогноз погоды", "⚙️ Настройки"]
     return text in valid_commands
+
 
 #ПОЛУЧЕНИЕ ПОГОДНЫХ ДАННЫХ
 def extract_weather_data(entry):
@@ -616,6 +623,7 @@ def extract_weather_data(entry):
     logging.debug(f"Извлечённые погодные данные: {weather_data}")
     return weather_data
 
+
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
 def get_today_forecast(city, user):
     """Прогноз погоды на сегодня с учётом tracked_weather_params"""
@@ -653,8 +661,43 @@ def get_today_forecast(city, user):
         "date": date_formatted,
         "day_name": day_name
     })
+    return filtered_weather_data
 
-    logging.debug(f"Сформированный прогноз на сегодня: {filtered_weather_data}")
+
+def get_tomorrow_forecast(city, user):
+    """Прогноз погоды на завтра с учётом tracked_weather_params"""
+    raw_data = fetch_tomorrow_forecast(city)
+    if not raw_data:
+        return None  
+    tomorrow = date.today() + timedelta(days=1)
+    day_name = WEEKDAYS_RU[tomorrow.strftime("%A")]
+    date_formatted = f"{tomorrow.day} {MONTHS_RU[tomorrow.month]}"
+    tracked_params = decode_tracked_params(user.tracked_weather_params)
+    filtered_weather_data = {}
+    temp_min = float("inf")
+    temp_max = float("-inf")
+    for entry in raw_data:
+        if "main" not in entry or "temp" not in entry["main"]:
+            logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
+            continue
+        weather_data = extract_weather_data(entry)
+        for key, value in weather_data.items():
+            if tracked_params.get(key, False) and value is not None:
+                filtered_weather_data[key] = value
+        temp = weather_data.get("temp")
+        if temp is not None:
+            temp_min = min(temp_min, temp)
+            temp_max = max(temp_max, temp)
+    if temp_min == float("inf"):
+        temp_min = None
+    if temp_max == float("-inf"):
+        temp_max = None
+    filtered_weather_data.update({
+        "temp_min": temp_min,
+        "temp_max": temp_max,
+        "date": date_formatted,
+        "day_name": day_name
+    })
     return filtered_weather_data
 
 

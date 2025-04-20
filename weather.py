@@ -1,6 +1,7 @@
 #ИМПОРТЫ
 from dotenv import load_dotenv
 from timezonefinder import TimezoneFinder
+from datetime import datetime, timedelta
 
 import requests
 import os
@@ -60,6 +61,21 @@ def fetch_today_forecast(city):
         return None
 
     return response_data["list"] 
+
+#ПОЛУЧЕНИЕ ПРОГНОЗА НА СЕГОДНЯ ИЗ API
+def fetch_tomorrow_forecast(city):
+    WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+    url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
+    response = requests.get(url)
+    data = response.json()
+
+    if data.get("cod") != "200":
+        return None
+
+    entries = data["list"]
+    tomorrow = (datetime.utcnow() + timedelta(days=1)).date()
+
+    return [e for e in entries if datetime.utcfromtimestamp(e["dt"]).date() == tomorrow]
 
 #ПОЛУЧЕНИЕ ЧАСОВОГО ПОЯСА ПОЛЬЗОВАТЕЛЯ
 def get_city_timezone(city):

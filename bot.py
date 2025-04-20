@@ -111,7 +111,7 @@ def send_main_menu(chat_id):
     """Отправка главного меню пользователю."""
     delete_last_menu_message(chat_id)
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    main_keyboard.row("🌎 Узнать погоду", "📅 Прогноз погоды")
+    main_keyboard.row("🌎 Погода сегодня", "📅 Прогноз погоды")
     main_keyboard.row("👥 Друзья", "🎭 Профиль")
     main_keyboard.row("⚙️ Настройки")
     menu_option(chat_id, reply_markup=main_keyboard)
@@ -139,19 +139,21 @@ def delete_last_menu_message(chat_id):
 
 
 @safe_execute
-@bot.callback_query_handler(func=lambda call: call.data in ["forecast_today", "forecast_week"])
+@bot.callback_query_handler(func=lambda call: call.data in ["forecast_today", "forecast_tomorrow", "forecast_week"])
 def forecast_handler(call):
-    """Обработчик прогноза погоды на сегодня и неделю с учётом пользовательских настроек"""
+    """Обработчик прогноза погоды на сегодня, завтра и неделю с учётом пользовательских настроек"""
     chat_id = call.message.chat.id
     user = get_user(call.from_user.id)
     menu_message_id = call.message.message_id
     if not user or not user.preferred_city:
         bot.send_message(chat_id, "⚠ Сначала укажите ваш город в настройках!")
         return
-    forecast_data = (
-        [get_today_forecast(user.preferred_city, user)] if call.data == "forecast_today"
-        else get_weekly_forecast(user.preferred_city, user)
-    )
+    if call.data == "forecast_today":
+        forecast_data = [get_today_forecast(user.preferred_city, user)]
+    elif call.data == "forecast_tomorrow":
+        forecast_data = [get_tomorrow_forecast(user.preferred_city, user)]
+    else:
+        forecast_data = get_weekly_forecast(user.preferred_city, user)
     if not forecast_data or None in forecast_data:
         bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
@@ -175,7 +177,7 @@ def forecast_handler(call):
         bot_logger.warning(f"⚠ Не удалось отредактировать сообщение: {str(e)}")
         msg = bot.send_message(chat_id, forecast_text, parse_mode="HTML")
         update_data_field("last_bot_message", chat_id, msg.message_id)
-    bot_logger.info(f"✅ Прогноз погоды отправлен в чат {chat_id}.")  
+    bot_logger.info(f"✅ Прогноз погоды отправлен в чат {chat_id}.")
     send_main_menu(chat_id)
 
 
@@ -751,7 +753,7 @@ def menu_handler(message):
     """Универсальный обработчик для всех команд бота"""
     menu_actions[message.text](message)
 menu_actions = {
-    "🌎 Узнать погоду": weather,
+    "🌎 Погода сегодня": weather,
     "📅 Прогноз погоды": forecast_menu_handler,
     "⚙️ Настройки": lambda msg: send_settings_menu(msg.chat.id),
     "👥 Друзья": feature_in_development,
