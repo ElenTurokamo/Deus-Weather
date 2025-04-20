@@ -5,7 +5,8 @@ from sqlalchemy.pool import QueuePool
 from telebot import types
 from weather import fetch_today_forecast, fetch_weekly_forecast, fetch_tomorrow_forecast, get_city_timezone
 from models import User, LocalVars
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
+from zoneinfo import ZoneInfo
 
 import os
 import logging
@@ -664,19 +665,35 @@ def get_today_forecast(city, user):
     return filtered_weather_data
 
 
+
 def get_tomorrow_forecast(city, user):
-    """Прогноз погоды на завтра с учётом tracked_weather_params"""
+    """Прогноз погоды на завтра с учётом локального времени из timezone пользователя"""
     raw_data = fetch_tomorrow_forecast(city)
-    if not raw_data:
-        return None  
-    tomorrow = date.today() + timedelta(days=1)
-    day_name = WEEKDAYS_RU[tomorrow.strftime("%A")]
-    date_formatted = f"{tomorrow.day} {MONTHS_RU[tomorrow.month]}"
+    if not raw_data or not user.timezone:
+        return None
+    try:
+        user_tz = ZoneInfo(user.timezone)
+    except Exception as e:
+        logging.error(f"❌ Ошибка при загрузке таймзоны: {e}")
+        return None
+    now_local = datetime.now(user_tz)
+    tomorrow_date = (now_local + timedelta(days=1)).date()
+
+    tomorrow_entries = []
+    for entry in raw_data:
+        entry_dt_utc = datetime.fromtimestamp(entry["dt"], tz=timezone.utc)
+        entry_dt_local = entry_dt_utc.astimezone(user_tz)
+        if entry_dt_local.date() == tomorrow_date:
+            tomorrow_entries.append(entry)
+    if not tomorrow_entries:
+        return None
+    day_name = WEEKDAYS_RU[tomorrow_date.strftime("%A")]
+    date_formatted = f"{tomorrow_date.day} {MONTHS_RU[tomorrow_date.month]}"
     tracked_params = decode_tracked_params(user.tracked_weather_params)
     filtered_weather_data = {}
     temp_min = float("inf")
     temp_max = float("-inf")
-    for entry in raw_data:
+    for entry in tomorrow_entries:
         if "main" not in entry or "temp" not in entry["main"]:
             logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
             continue

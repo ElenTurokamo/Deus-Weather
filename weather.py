@@ -67,15 +67,12 @@ def fetch_tomorrow_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
     url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
     response = requests.get(url)
-    data = response.json()
+    response_data = response.json()
 
-    if data.get("cod") != "200":
+    if response_data.get("cod") != "200":
         return None
 
-    entries = data["list"]
-    tomorrow = (datetime.utcnow() + timedelta(days=1)).date()
-
-    return [e for e in entries if datetime.utcfromtimestamp(e["dt"]).date() == tomorrow]
+    return response_data["list"] 
 
 #ПОЛУЧЕНИЕ ЧАСОВОГО ПОЯСА ПОЛЬЗОВАТЕЛЯ
 def get_city_timezone(city):

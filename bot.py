@@ -113,7 +113,7 @@ def send_main_menu(chat_id):
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     main_keyboard.row("🌎 Погода сегодня", "📅 Прогноз погоды")
     main_keyboard.row("👥 Друзья", "🎭 Профиль")
-    main_keyboard.row("⚙️ Настройки")
+    main_keyboard.row("🌤 Deus Pass", "⚙️ Настройки")
     menu_option(chat_id, reply_markup=main_keyboard)
 
 
@@ -664,7 +664,12 @@ def feature_in_development(message):
     """Временный обработчик для уведомления о разработке"""
     chat_id = message.chat.id
     delete_last_menu_message(chat_id)
-    feature_name = "профиля" if message.text == "🎭 Профиль" else "друзей"
+    if message.text == "🎭 Профиль": 
+        feature_name = "профиля"
+    elif message.text == "🌤 Deus Pass":
+        feature_name = "подписки"
+    else:
+        feature_name = "друзей"
     bot.reply_to(message, f"‼️ Функция {feature_name} всё ещё в разработке!\n\nСледите за обновлениями!")
     bot_logger.info(f"▸ Пользователь {chat_id} запросил {feature_name}, но функция в разработке.")
     send_main_menu(chat_id)
@@ -758,6 +763,7 @@ menu_actions = {
     "⚙️ Настройки": lambda msg: send_settings_menu(msg.chat.id),
     "👥 Друзья": feature_in_development,
     "🎭 Профиль": feature_in_development,
+    "🌤 Deus Pass": feature_in_development,
     "🏙 Изменить город": changecity,
     "🔔 Уведомления": notification_settings,
     "↩ Назад": settings_back_to_main_menu,
