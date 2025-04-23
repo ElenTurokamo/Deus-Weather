@@ -48,6 +48,44 @@ WIND_DIRECTIONS = {
     (292.5, 337.5): "Северо-Запад"
 }
 
+BAD_WEATHER_DESCRIPTIONS = [
+    "Гроза с небольшим дождём", "Гроза с дождём", "Гроза с сильным дождём",
+    "Слабая гроза", "Гроза", "Сильная гроза", "Неустойчивая гроза",
+    "Гроза с лёгкой моросью", "Гроза с моросью", "Гроза с сильной моросью",
+
+    "Лёгкая морось", "Морось", "Сильная морось",
+    "Лёгкий моросящий дождь", "Моросящий дождь", "Сильный моросящий дождь",
+    "Ливень и морось", "Сильный ливень и морось", "Моросящий ливень",
+
+    "Небольшой дождь", "Умеренный дождь", "Сильный дождь", "Очень сильный дождь",
+    "Чрезвычайно сильный дождь", "Ледяной дождь",
+    "Лёгкий ливень", "Ливень", "Сильный ливень", "Неустойчивый ливень",
+
+    "Небольшой снег", "Снег", "Сильный снег",
+    "Мокрый снег", "Слабый ливень с мокрым снегом", "Ливень с мокрым снегом",
+    "Небольшой дождь со снегом", "Дождь со снегом",
+    "Слабый ливень со снегом", "Ливень со снегом", "Сильный ливень со снегом",
+]
+
+WEATHER_EMOJI_MAP = {
+    "гроза": "🌩",
+    "морось": "🌫",
+    "дождь": "☔️",
+    "ливень": "🌧",
+    "снег": "❄️",
+    "туман": "🌁",
+}
+
+SEVERITY_MAP = {
+    "гроза": 5,
+    "сильный ливень": 4,
+    "сильный снег": 4,
+    "ливень": 3,
+    "дождь": 2,
+    "морось": 1,
+}
+
+
 #ВЗАИМОДЕЙСТВИЕ С БД
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL, poolclass=QueuePool, pool_recycle=280, pool_pre_ping=True, echo=False)
@@ -626,24 +664,34 @@ def extract_weather_data(entry):
 
 
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
-def get_today_forecast(city, user):
-    """Прогноз погоды на сегодня с учётом tracked_weather_params"""
+def get_today_forecast(city, user, target_date=None):
+    """Прогноз погоды на определённую дату с учётом предпочтений пользователя."""
     raw_data = fetch_today_forecast(city)
     if not raw_data:
-        return None  
+        return None
 
-    today = date.today()
-    day_name = WEEKDAYS_RU[today.strftime("%A")]
-    date_formatted = f"{today.day} {MONTHS_RU[today.month]}"  
+    tz = ZoneInfo(user.timezone or "UTC")
+    now = datetime.now(tz)
+    today = target_date or now.date()
 
-    today_data = raw_data[0]
+    # Фильтруем только те данные, которые соответствуют нужной дате
+    today_entries = [
+        entry for entry in raw_data
+        if datetime.fromtimestamp(entry["dt"], tz).date() == today
+    ]
+
+    if not today_entries:
+        logging.warning(f"⚠ Нет прогноза на дату {today} для города {city}")
+        return None
+
+    # Берём ближайшую точку к текущему времени (или просто первую)
+    today_data = min(today_entries, key=lambda entry: abs(datetime.fromtimestamp(entry["dt"], tz) - now))
 
     if "main" not in today_data or "temp" not in today_data["main"]:
         logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {today_data}")
-        return None  
+        return None
 
     weather_data = extract_weather_data(today_data)
-
     tracked_params = decode_tracked_params(user.tracked_weather_params)
     filtered_weather_data = {}
 
@@ -652,16 +700,19 @@ def get_today_forecast(city, user):
             filtered_weather_data[key] = value
         else:
             logging.debug(f"Ключ {key} исключён из данных прогноза: {value}")
-            
+
     temp_min = weather_data.get("temp_min", weather_data["temp"])
     temp_max = weather_data.get("temp_max", weather_data["temp"])
     filtered_weather_data["temp_min"] = min(filtered_weather_data.get("temp_min", float("inf")), temp_min)
     filtered_weather_data["temp_max"] = max(filtered_weather_data.get("temp_max", float("-inf")), temp_max)
 
+    day_name = WEEKDAYS_RU[today.strftime("%A")]
+    date_formatted = f"{today.day} {MONTHS_RU[today.month]}"
     filtered_weather_data.update({
         "date": date_formatted,
         "day_name": day_name
     })
+
     return filtered_weather_data
 
 
@@ -764,3 +815,59 @@ def get_weekly_forecast(city, user):
         }
         for date, data in sorted(daily_data.items())
     ]
+
+
+def get_forecast_emoji(description):
+    description = description.lower()
+    for key, emoji in WEATHER_EMOJI_MAP.items():
+        if key in description:
+            return emoji
+    return "🌦" 
+
+
+def get_most_severe_description(descriptions):
+    def score(desc):
+        for key, val in SEVERITY_MAP.items():
+            if key in desc.lower():
+                return val
+        return 0
+    return max(descriptions, key=score)
+
+
+def get_weather_summary_description(forecast_data, user):
+    """Анализирует прогноз и выдает краткое, но честное резюме погоды."""
+    tz = ZoneInfo(user.timezone or "UTC")
+    now = datetime.now(tz)
+    today = now.date()
+
+    bad_weather_periods = []
+
+    for entry in forecast_data:
+        timestamp = datetime.fromtimestamp(entry["dt"], tz)
+        if timestamp.date() != today:
+            continue 
+
+        description = entry["weather"][0]["description"].capitalize()
+        if description in BAD_WEATHER_DESCRIPTIONS:
+            bad_weather_periods.append((timestamp, description))
+
+    if not bad_weather_periods:
+        return "🌤 Сегодня осадков не ожидается!"
+
+    last_bad_weather_time = bad_weather_periods[-1][0]
+    if last_bad_weather_time < now:
+        return "🌤 Сегодня осадков не ожидается!"
+
+    if len(bad_weather_periods) == 1:
+        time_str = bad_weather_periods[0][0].strftime("%H:%M")
+        desc = bad_weather_periods[0][1]
+        emoji = get_forecast_emoji(desc)
+        return f"{emoji} {desc} ожидается в {time_str}."
+
+    descriptions = [desc for _, desc in bad_weather_periods]
+    main_description = get_most_severe_description(descriptions)
+    first_time = bad_weather_periods[0][0].strftime("%H:%M")
+    last_time = bad_weather_periods[-1][0].strftime("%H:%M")
+    emoji = get_forecast_emoji(main_description)
+
+    return f"{emoji} {main_description} ожидается с {first_time} до {last_time}."

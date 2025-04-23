@@ -10,9 +10,9 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from functools import wraps
 from models import CheckedCities, User, Base
-from logic import safe_execute, convert_pressure, convert_temperature, convert_wind_speed, decode_tracked_params
+from logic import safe_execute, convert_pressure, convert_temperature, convert_wind_speed, decode_tracked_params, get_weather_summary_description
 from logic import UNIT_TRANSLATIONS, get_all_users, decode_notification_settings, get_wind_direction, get_wind_direction
-from weather import get_weather
+from weather import get_weather, fetch_today_forecast
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool    
@@ -39,8 +39,10 @@ SessionLocal = sessionmaker(bind=engine)
 
 Base.metadata.create_all(engine)
 
+
 #ШИФРОВАНИЕ
 load_dotenv()
+
 
 #СЛОВАРИ
 stop_event = Event()
@@ -578,27 +580,31 @@ def send_daily_forecast(test_time=None):
     """Отправляет и закрепляет ежедневный прогноз погоды пользователям."""
     users = get_all_users()
     timer_logger.info(f"▸ Найдено пользователей для прогноза: {len(users)}")
-    now = test_time or datetime.now()
+
     for user in users:
         settings = decode_notification_settings(user.notifications_settings)
         if not settings.get("forecast_notifications", False):
             timer_logger.debug(f"🚫 Уведомления отключены у {user.user_id}, пропускаем.")
             continue
-        user_tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
-        user_time = now.astimezone(user_tz)
+
+        user_tz = ZoneInfo(user.timezone or "UTC")
+        user_time = test_time.astimezone(user_tz) if test_time else datetime.now(user_tz)
         timer_logger.debug(f"▸ {user.user_id} ({user.preferred_city}): {user_time} (локальное)")
+
         if user_time.hour == 6 and user_time.minute < 10:
-            raw_forecast = get_today_forecast(user.preferred_city, user)         
+            raw_forecast = get_today_forecast(user.preferred_city, user)
             if not raw_forecast:
                 timer_logger.warning(f"⚠ `get_today_forecast` не вернула данные для {user.preferred_city}!")
                 continue
+
             updated_time = user_time.strftime("%H:%M")
             forecast_message = (
                 "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
-                f"[Обновлено в {updated_time}]\n"
+                # f"[Обновлено в {updated_time}]\n"
                 + format_forecast(raw_forecast, user)
-                + "\n\n      ⟪ Deus Weather ⟫"
+                + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city), user)
             )
+
             last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
             if last_forecast_id:
                 try:
@@ -607,9 +613,7 @@ def send_daily_forecast(test_time=None):
                 except Exception as del_error:
                     timer_logger.warning(f"⚠ Не удалось удалить старое сообщение для {user.user_id}: {del_error}")
             try:
-                sent_message = bot.send_message(
-                    user.user_id, forecast_message, parse_mode="HTML"
-                )
+                sent_message = bot.send_message(user.user_id, forecast_message, parse_mode="HTML")
                 update_data_field("last_daily_forecast", user.user_id, sent_message.message_id)
                 timer_logger.info(f"✅ Новый прогноз отправлен пользователю {user.user_id}.")
                 try:
@@ -628,12 +632,11 @@ def send_daily_forecast(test_time=None):
 def update_daily_forecasts():
     """Обновляет закреплённые ежедневные прогнозы."""
     users = get_all_users()
-    now = datetime.now()
     timer_logger.info(f"▸ Найдено пользователей для прогноза: {len(users)}")
 
     for user in users:
-        user_tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
-        user_time = now.astimezone(user_tz)
+        user_tz = ZoneInfo(user.timezone or "UTC")
+        user_time = datetime.now(user_tz)
 
         last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
         if not last_forecast_id:
@@ -648,9 +651,9 @@ def update_daily_forecasts():
         updated_time = user_time.strftime("%H:%M")
         forecast_message = (
             "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
-            f"[Обновлено в {updated_time}]\n"
+            # f"[Обновлено в {updated_time}]\n"
             + format_forecast(raw_forecast, user)
-            + "\n\n      ⟪ Deus Weather ⟫"
+            + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city), user)
         )
         try:
             bot.edit_message_text(

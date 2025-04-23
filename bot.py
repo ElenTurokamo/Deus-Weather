@@ -2,7 +2,7 @@
 from telebot import types
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
-from logic import get_user, save_user, update_user
+from logic import get_user, save_user, update_user 
 from logic import *
 from weather import get_weather
 from datetime import datetime, timezone
@@ -481,14 +481,14 @@ def refresh_daily_forecast(user_id):
     if not raw_forecast:
         bot_logger.warning(f"▸ `get_today_forecast` не вернула данные для {user.preferred_city}!")
         return
-    user_tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
-    user_time = datetime.now().astimezone(user_tz)
+    user_tz = ZoneInfo(user.timezone or "UTC")
+    user_time = datetime.now(user_tz)
     updated_time = user_time.strftime("%H:%M")
     forecast_message = (
         "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
-        f"[Обновлено в {updated_time}]\n"
+        # f"[Обновлено в {updated_time}]\n"
         + format_forecast(raw_forecast, user)
-        + "\n\n      ⟪ Deus Weather ⟫"
+        + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city), user)
     )
     try:
         sent_message = bot.send_message(
@@ -521,14 +521,14 @@ def update_existing_forecast(user_id):
     if not raw_forecast:
         bot_logger.warning(f"▸ `get_today_forecast` не вернула данные для {user.preferred_city}!")
         return
-    user_tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
-    user_time = datetime.now().astimezone(user_tz)
+    user_tz = ZoneInfo(user.timezone or "UTC")
+    user_time = datetime.now(user_tz)
     updated_time = user_time.strftime("%H:%M")
     forecast_message = (
         "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
-        f"[Обновлено в {updated_time}]\n"
+        # f"[Обновлено в {updated_time}]\n"
         + format_forecast(raw_forecast, user)
-        + "\n\n      ⟪ Deus Weather ⟫"
+        + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city), user)
     )
     if last_forecast_id:
         try:
@@ -590,28 +590,40 @@ def format_settings(param, reply_to=None):
         bot_logger.error(f"▸ Ошибка: пользователь {chat_id} не найден в format_settings()")
         bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
         return
-    header = f"Сейчас ваши данные измеряются в следующих величинах:"
-    separator = "─" * min(len(header), 21)
+    header = "Сейчас ваши единицы измерения выглядят так:"
     text = (
-        f"{header}\n"
-        f"{separator}\n"
+        f"<b>{header}</b>\n"
+        f"<blockquote>"
         f"▸ Температура: {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
         f"▸ Давление: {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
-        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
-        f"{separator}\n"
-        f"Выберите параметр для изменения единиц измерения:"
+        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"
+        f"</blockquote>\n"
+        f"Выберите параметр для изменения:"
     )
+
     menu_message_id = get_data_field("last_format_settings_menu", chat_id)
     try:
         if menu_message_id:
-            bot.edit_message_text(text, chat_id, menu_message_id, reply_markup=generate_format_keyboard())
+            bot.edit_message_text(
+                text,
+                chat_id,
+                menu_message_id,
+                reply_markup=generate_format_keyboard(),
+                parse_mode="HTML"
+            )
             bot_logger.info(f"▸ Меню единиц измерения обновлено для чата {chat_id}.")
         else:
             raise KeyError("Меню отсутствует, отправляем новое сообщение.")
     except Exception as e:
         bot_logger.warning(f"▸ Ошибка при редактировании сообщения: {e}. Отправляем новое сообщение.")
         try:
-            msg = bot.send_message(chat_id, text, reply_markup=generate_format_keyboard(), reply_to_message_id=reply_to)
+            msg = bot.send_message(
+                chat_id,
+                text,
+                reply_markup=generate_format_keyboard(),
+                reply_to_message_id=reply_to,
+                parse_mode="HTML"
+            )
             update_data_field("last_format_settings_menu", chat_id, msg.message_id)
             bot_logger.info(f"▸ Новое меню единиц измерения отправлено в чат {chat_id}.")
         except Exception as send_error:
@@ -628,17 +640,17 @@ def return_to_format_settings(call):
         bot_logger.error(f"▸ Ошибка: пользователь {chat_id} не найден.")
         bot.send_message(chat_id, "Ошибка: пользователь не найден. Попробуйте /start.")
         return
-    header = f"Сейчас ваши данные измеряются в следующих величинах:"
-    separator = "─" * min(len(header), 21)
+    header = "Сейчас ваши единицы измерения выглядят так:"
     text = (
-        f"{header}\n"
-        f"{separator}\n"
+        f"<b>{header}</b>\n"
+        f"<blockquote>"
         f"▸ Температура: {UNIT_TRANSLATIONS['temp'][user.temp_unit]}\n"
         f"▸ Давление: {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}\n"
-        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}\n"
-        f"{separator}\n"
-        f"Выберите параметр для изменения единиц измерения:"
+        f"▸ Скорость ветра: {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"
+        f"</blockquote>\n"
+        f"Выберите параметр для изменения:"
     )
+
     try:
         bot.edit_message_text(
             text,
@@ -709,7 +721,7 @@ def weather_data_settings(message):
         bot_logger.error(f"❌ Ошибка: пользователь {chat_id} не найден.")
         bot.send_message(chat_id, "Ошибка: пользователь не найден.")
         return
-    text = "Выберите данные, которые вы хотите видеть при получении погоды:"
+    text = "Выберите данные, которые будет показывать бот:"
     try:
         keyboard = generate_weather_data_keyboard(user)
         bot.send_message(chat_id, text, reply_markup=keyboard, reply_to_message_id=message.message_id)
