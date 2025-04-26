@@ -11,14 +11,14 @@ from dotenv import load_dotenv
 from functools import wraps
 from models import CheckedCities, User, Base
 from logic import safe_execute, convert_pressure, convert_temperature, convert_wind_speed, decode_tracked_params, get_weather_summary_description
-from logic import UNIT_TRANSLATIONS, get_all_users, decode_notification_settings, get_wind_direction, get_wind_direction
+from logic import UNIT_TRANSLATIONS, get_all_users, decode_notification_settings, get_wind_direction, get_wind_direction, get_today_forecast
 from weather import get_weather, fetch_today_forecast
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool    
 from threading import Event
 from logging.handlers import RotatingFileHandler
-from bot import get_data_field, update_data_field, send_main_menu, send_settings_menu, get_today_forecast, format_forecast
+from bot import get_data_field, update_data_field, send_main_menu, send_settings_menu, format_forecast
 from zoneinfo import ZoneInfo
 
 #ПЕРЕМЕННЫЕ
@@ -466,7 +466,7 @@ def send_weather_update(users, city, changes, current_data):
             message += f"{arrow} {label}: {value_str}\n"
 
         # Завершающая строка
-        message += "\n      ⟪ Deus Weather ⟫"
+        message += "\n🌤 Природа переменчива, но именно она создает гармонию."
 
         delete_previous_weather_notification(chat_id)
         sent_msg = bot.send_message(chat_id, message, parse_mode="HTML")

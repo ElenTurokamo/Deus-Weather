@@ -597,10 +597,9 @@ def format_weather_data(data, user):
 
     for param, (label, value) in params.items():
         if tracked_params.get(param, False): 
-            logging.debug(f"Добавление параметра: {param} - {label}: {value}")
             weather_text += f"▸ {label}: {value}\n"
 
-    return weather_text + "\n      ⟪ Deus Weather ⟫"
+    return weather_text + "\n🌤 Погода никогда не стоит на месте."
 
 
 def format_change(label, old_value, new_value, unit=""):
@@ -683,6 +682,11 @@ def get_today_forecast(city, user, target_date=None):
     if not today_entries:
         logging.warning(f"⚠ Нет прогноза на дату {today} для города {city}")
         return None
+    
+    descriptions = []
+    for entry in today_entries:
+        if "weather" in entry and entry["weather"]:
+            descriptions.append(entry["weather"][0]["description"])
 
     # Берём ближайшую точку к текущему времени (или просто первую)
     today_data = min(today_entries, key=lambda entry: abs(datetime.fromtimestamp(entry["dt"], tz) - now))
@@ -705,6 +709,8 @@ def get_today_forecast(city, user, target_date=None):
     temp_max = weather_data.get("temp_max", weather_data["temp"])
     filtered_weather_data["temp_min"] = min(filtered_weather_data.get("temp_min", float("inf")), temp_min)
     filtered_weather_data["temp_max"] = max(filtered_weather_data.get("temp_max", float("-inf")), temp_max)
+
+    filtered_weather_data["descriptions"] = descriptions
 
     day_name = WEEKDAYS_RU[today.strftime("%A")]
     date_formatted = f"{today.day} {MONTHS_RU[today.month]}"
@@ -729,13 +735,15 @@ def get_tomorrow_forecast(city, user):
         return None
     now_local = datetime.now(user_tz)
     tomorrow_date = (now_local + timedelta(days=1)).date()
-
     tomorrow_entries = []
+    descriptions = [] 
     for entry in raw_data:
         entry_dt_utc = datetime.fromtimestamp(entry["dt"], tz=timezone.utc)
         entry_dt_local = entry_dt_utc.astimezone(user_tz)
         if entry_dt_local.date() == tomorrow_date:
             tomorrow_entries.append(entry)
+            if "weather" in entry and entry["weather"]:
+                descriptions.append(entry["weather"][0]["description"])
     if not tomorrow_entries:
         return None
     day_name = WEEKDAYS_RU[tomorrow_date.strftime("%A")]
@@ -764,7 +772,8 @@ def get_tomorrow_forecast(city, user):
         "temp_min": temp_min,
         "temp_max": temp_max,
         "date": date_formatted,
-        "day_name": day_name
+        "day_name": day_name,
+        "descriptions": descriptions  
     })
     return filtered_weather_data
 
@@ -774,13 +783,10 @@ def get_weekly_forecast(city, user):
     raw_data = fetch_weekly_forecast(city)
     if not raw_data:
         return None  
-
     daily_data = {}
     today = date.today()
     start_date = today + timedelta(days=1)
-
     tracked_params = decode_tracked_params(user.tracked_weather_params)
-
     for entry in raw_data:
         timestamp = entry["dt"] 
         date_obj = datetime.fromtimestamp(timestamp).date()
@@ -788,25 +794,22 @@ def get_weekly_forecast(city, user):
 
         if date_obj < start_date or (date_obj - start_date).days >= 5:
             continue
-
         if "main" not in entry or "temp" not in entry["main"]:
             logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
             continue
-
         weather_data = extract_weather_data(entry)
-        filtered_weather_data = {
-            key: value for key, value in weather_data.items() if key in tracked_params and tracked_params[key]
-        }
-
         if date_obj not in daily_data:
             daily_data[date_obj] = {
                 "day_name": day_name,
-                **filtered_weather_data
+                "descriptions": [], 
+                **{
+                    key: value for key, value in weather_data.items() if key in tracked_params and tracked_params[key]
+                }
             }
-
         daily_data[date_obj]["temp_min"] = min(daily_data[date_obj].get("temp_min", float("inf")), weather_data["temp"])
         daily_data[date_obj]["temp_max"] = max(daily_data[date_obj].get("temp_max", float("-inf")), weather_data["temp"])
-
+        if "weather" in entry and entry["weather"]:
+            daily_data[date_obj]["descriptions"].append(entry["weather"][0]["description"])
     return [
         {
             "date": f"{date.day} {MONTHS_RU[date.month]}",
@@ -834,18 +837,45 @@ def get_most_severe_description(descriptions):
     return max(descriptions, key=score)
 
 
+MAX_GAP_HOURS = 3
+
+
+def group_bad_weather_periods(bad_weather_periods):
+    """Группирует подряд идущие плохие погодные прогнозы."""
+    if not bad_weather_periods:
+        return []
+
+    groups = []
+    current_group = [bad_weather_periods[0]]
+
+    for i in range(1, len(bad_weather_periods)):
+        prev_time, _ = bad_weather_periods[i-1]
+        curr_time, _ = bad_weather_periods[i]
+        if (curr_time - prev_time) <= timedelta(hours=MAX_GAP_HOURS):
+            current_group.append(bad_weather_periods[i])
+        else:
+            groups.append(current_group)
+            current_group = [bad_weather_periods[i]]
+
+    groups.append(current_group)
+    return groups
+
+
+
 def get_weather_summary_description(forecast_data, user):
     """Анализирует прогноз и выдает краткое, но честное резюме погоды."""
     tz = ZoneInfo(user.timezone or "UTC")
     now = datetime.now(tz)
     today = now.date()
 
+    # Собираем плохую погоду с фильтром по времени
     bad_weather_periods = []
-
     for entry in forecast_data:
         timestamp = datetime.fromtimestamp(entry["dt"], tz)
         if timestamp.date() != today:
-            continue 
+            continue
+        if timestamp < now - timedelta(hours=1):  # Не трогаем старьё
+            continue
 
         description = entry["weather"][0]["description"].capitalize()
         if description in BAD_WEATHER_DESCRIPTIONS:
@@ -854,20 +884,25 @@ def get_weather_summary_description(forecast_data, user):
     if not bad_weather_periods:
         return "🌤 Сегодня осадков не ожидается!"
 
-    last_bad_weather_time = bad_weather_periods[-1][0]
-    if last_bad_weather_time < now:
-        return "🌤 Сегодня осадков не ожидается!"
+    # Группируем события
+    groups = group_bad_weather_periods(bad_weather_periods)
 
-    if len(bad_weather_periods) == 1:
-        time_str = bad_weather_periods[0][0].strftime("%H:%M")
-        desc = bad_weather_periods[0][1]
-        emoji = get_forecast_emoji(desc)
-        return f"{emoji} {desc} ожидается в {time_str}."
+    # Ищем группу, которая либо актуальна прямо сейчас, либо ближайшая
+    for group in groups:
+        start_time, start_desc = group[0]
+        end_time, end_desc = group[-1]
 
-    descriptions = [desc for _, desc in bad_weather_periods]
-    main_description = get_most_severe_description(descriptions)
-    first_time = bad_weather_periods[0][0].strftime("%H:%M")
-    last_time = bad_weather_periods[-1][0].strftime("%H:%M")
-    emoji = get_forecast_emoji(main_description)
+        if now <= end_time:
+            main_description = get_most_severe_description([desc for _, desc in group])
+            emoji = get_forecast_emoji(main_description)
 
-    return f"{emoji} {main_description} ожидается с {first_time} до {last_time}."
+            # Если событие длится больше одного таймслота
+            if start_time != end_time:
+                start_str = start_time.strftime("%H:%M")
+                end_str = end_time.strftime("%H:%M")
+                return f"{emoji} {main_description} ожидается с {start_str} до {end_str}."
+            else:
+                start_str = start_time.strftime("%H:%M")
+                return f"{emoji} {main_description} ожидается в {start_str}."
+
+    return "🌤 Сегодня осадков не ожидается!"

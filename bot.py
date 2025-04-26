@@ -7,6 +7,7 @@ from logic import *
 from weather import get_weather
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from collections import Counter
 
 
 import logging
@@ -158,7 +159,7 @@ def forecast_handler(call):
         bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
     try:
-        forecast_text = "\n\n".join([format_forecast(day, user) for day in forecast_data]) + "\n\n      ⟪ Deus Weather ⟫"
+        forecast_text = "\n\n".join([format_forecast(day, user) for day in forecast_data]) + "\n\n🌤 Всё, что изменчиво, дарует мудрость."
     except KeyError as e:
         bot_logger.error(f"Ключ отсутствует в данных прогноза: {e}")
         bot.send_message(chat_id, "⚠ Произошла ошибка при обработке прогноза.")
@@ -188,8 +189,13 @@ def format_forecast(day, user):
         f"<b>{day['day_name']}, {day['date']}</b>",
         "─" * min(len(f"{day['day_name']}, {day['date']}"), 21)
     ]
-    if tracked_params.get("description", False) and "description" in day:
-        parts.append(f"▸ Погода: {day['description']}")
+    if tracked_params.get("description", False) and "descriptions" in day:
+        if isinstance(day["descriptions"], list) and day["descriptions"]:
+            most_common_desc = Counter(day["descriptions"]).most_common(1)[0][0]
+            most_common_desc = most_common_desc.capitalize()
+            parts.append(f"▸ Погода: {most_common_desc}")
+        elif "description" in day:
+            parts.append(f"▸ Погода: {day['description']}")
     if tracked_params.get("temperature", False) and "temp_min" in day and "temp_max" in day:
         temp_unit = UNIT_TRANSLATIONS['temp'][user.temp_unit]
         temp_min = round(convert_temperature(day['temp_min'], user.temp_unit))
