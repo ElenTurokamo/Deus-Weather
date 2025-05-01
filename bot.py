@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
 from logic import get_user, save_user, update_user 
 from logic import *
-from weather import get_weather
+from weather import get_weather, resolve_city_from_coords
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from collections import Counter
@@ -112,9 +112,8 @@ def send_main_menu(chat_id):
     """Отправка главного меню пользователю."""
     delete_last_menu_message(chat_id)
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    main_keyboard.row("🌎 Погода сегодня", "📅 Прогноз погоды")
-    main_keyboard.row("👥 Друзья", "🎭 Профиль")
-    main_keyboard.row("🌤 Deus Pass", "⚙️ Настройки")
+    main_keyboard.row("🌎 Погода сейчас", "📅 Прогноз погоды")
+    main_keyboard.row("⚙️ Настройки")
     menu_option(chat_id, reply_markup=main_keyboard)
 
 
@@ -298,19 +297,28 @@ def start(message):
     user = get_user(user_id)
     chat_id = message.chat.id
     delete_last_menu_message(chat_id)
+
     if user and user.preferred_city:
-        back_reply_text = (f"С возвращением, {message.from_user.first_name}!\n"
-                      f"Ваш основной город — {user.preferred_city}.")
+        back_reply_text = (
+            f"С возвращением, {message.from_user.first_name}!\n"
+            f"Ваш основной город — {user.preferred_city}."
+        )
         msg = bot.reply_to(message, back_reply_text)  
         update_data_field("last_bot_message", chat_id, msg.message_id)
-        send_main_menu(message.chat.id)
+        send_main_menu(chat_id)
     else:
         save_user(user_id, message.from_user.first_name)
-        new_reply_text = (f"Привет, {message.from_user.first_name}!\n"
-                      "Чтобы начать пользоваться ботом — введите свой город.")
-        msg = bot.reply_to(message, new_reply_text)
+        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        button_geo = types.KeyboardButton(text="📍 Отправить координаты", request_location=True)
+        keyboard.add(button_geo)
+        new_reply_text = (
+            f"Привет, {message.from_user.first_name}!\n\n"
+            "Чтобы начать пользоваться ботом, отправьте свои координаты или введите город вручную."
+        )
+        msg = bot.send_message(chat_id, new_reply_text, reply_markup=keyboard)
         update_data_field("last_bot_message", chat_id, msg.message_id)
-        bot.register_next_step_handler(msg, process_new_city_registration) 
+        bot.register_next_step_handler(msg, process_new_city_registration)
+
     bot_logger.info(f"▸ Команда /start обработана для пользователя {user_id}.")
 
 
@@ -432,6 +440,32 @@ def toggle_notification(call):
     except Exception as e:
         bot_logger.warning(f"▸ Ошибка при обновлении notifications_settings для пользователя {user.user_id}: {e}")
     bot.answer_callback_query(call.id)
+
+
+@safe_execute
+@bot.message_handler(commands=['stop'])
+def stop_notifications(message):
+    """Отключает все уведомления пользователя командой /stop."""
+    user = get_user(message.from_user.id)
+    chat_id = message.chat.id
+    if not user:
+        bot.send_message(chat_id, "Ошибка: пользователь не найден.")
+        bot_logger.warning(f"▸ Команда /stop: пользователь с ID {message.from_user.id} не найден.")
+        return
+    delete_last_menu_message(chat_id)
+    try:
+        new_settings = {
+            "weather_threshold_notifications": False,
+            "forecast_notifications": False,
+            "bot_notifications": False
+        }
+        update_user(user.user_id, notifications_settings=json.dumps(new_settings))
+        bot.send_message(chat_id, "🔕 Бот больше не будет присылать уведомления.\nДля включения уведомлений зайдите в настройки.")
+        bot_logger.info(f"▸ Пользователь {user.user_id} отключил все уведомления через /stop.")
+    except Exception as e:
+        bot_logger.error(f"▸ Ошибка при отключении уведомлений через /stop для пользователя {user.user_id}: {e}")
+        bot.send_message(chat_id, "Произошла ошибка при отключении уведомлений. Попробуйте позже.")
+    send_main_menu(chat_id)
 
 
 @safe_execute
@@ -677,20 +711,20 @@ def format_settings_callback(call):
     format_settings(call.message)
 
 
-@safe_execute
-def feature_in_development(message):
-    """Временный обработчик для уведомления о разработке"""
-    chat_id = message.chat.id
-    delete_last_menu_message(chat_id)
-    if message.text == "🎭 Профиль": 
-        feature_name = "профиля"
-    elif message.text == "🌤 Deus Pass":
-        feature_name = "подписки"
-    else:
-        feature_name = "друзей"
-    bot.reply_to(message, f"‼️ Функция {feature_name} всё ещё в разработке!\n\nСледите за обновлениями!")
-    bot_logger.info(f"▸ Пользователь {chat_id} запросил {feature_name}, но функция в разработке.")
-    send_main_menu(chat_id)
+# @safe_execute
+# def feature_in_development(message):
+#     """Временный обработчик для уведомления о разработке"""
+#     chat_id = message.chat.id
+#     delete_last_menu_message(chat_id)
+#     if message.text == "🎭 Профиль": 
+#         feature_name = "профиля"
+#     elif message.text == "🌤 Deus Pass":
+#         feature_name = "подписки"
+#     else:
+#         feature_name = "друзей"
+#     bot.reply_to(message, f"‼️ Функция {feature_name} всё ещё в разработке!\n\nСледите за обновлениями!")
+#     bot_logger.info(f"▸ Пользователь {chat_id} запросил {feature_name}, но функция в разработке.")
+#     send_main_menu(chat_id)
 
 
 @safe_execute
@@ -776,12 +810,12 @@ def menu_handler(message):
     """Универсальный обработчик для всех команд бота"""
     menu_actions[message.text](message)
 menu_actions = {
-    "🌎 Погода сегодня": weather,
+    "🌎 Погода сейчас": weather,
     "📅 Прогноз погоды": forecast_menu_handler,
     "⚙️ Настройки": lambda msg: send_settings_menu(msg.chat.id),
-    "👥 Друзья": feature_in_development,
-    "🎭 Профиль": feature_in_development,
-    "🌤 Deus Pass": feature_in_development,
+    # "👥 Друзья": feature_in_development,
+    # "🎭 Профиль": feature_in_development,
+    # "🌤 Deus Pass": feature_in_development,
     "🏙 Изменить город": changecity,
     "🔔 Уведомления": notification_settings,
     "↩ Назад": settings_back_to_main_menu,
@@ -800,6 +834,7 @@ def help_command(message):
     help_text = (
         "Основные команды бота:\n\n"
         "▸ /start — Запустить бота.\n"
+        "▸ /stop — Отключить бота."
         "▸ /weather — Узнать текущую погоду.\n"
         "▸ /changecity — Сменить город.\n"
         "▸ /weatherforecast — Получить прогноз погоды.\n"
@@ -886,65 +921,100 @@ def process_new_city(message, show_menu=False):
 
 @safe_execute
 def process_new_city_registration(message):
-    """Обрабатывает ввод нового города для регистрации пользователя."""
+    """Обрабатывает ввод нового города или локации для регистрации пользователя."""
     user_id = message.from_user.id
     chat_id = message.chat.id
-    city = message.text.strip()
-    def error_reply(text):
-        """Редактирует сообщение с ошибкой, запрашивает повторный ввод без кнопки отмены."""
+    def error_reply(comment):
+        """Удаляет старое сообщение и отправляет новое с тем же приветствием и ошибкой."""
+        base_text = (
+            f"Привет, {message.from_user.first_name} 🎶!\n\n"
+            "Чтобы начать пользоваться ботом, отправьте свои координаты или введите город вручную."
+        )
+        full_text = f"{base_text}\n\n{comment}"
         last_bot_msg_id = get_data_field("last_bot_message", chat_id)
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=last_bot_msg_id,
-                text=f"{text}\n\nВведите название своего города для завершения регистрации!",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            bot_logger.warning(f"Не удалось отредактировать сообщение об ошибке для пользователя {user_id}: {e}")
-            bot.register_next_step_handler(message, process_new_city_registration)
-            return
-        bot.register_next_step_handler(message, process_new_city_registration)
-    if city == "/start":
-        bot_logger.info(f"Пользователь {user_id} отправил /start вместо города при регистрации.")
-        start(message)
-        return
-    if city.startswith("/") or not city:
-        bot_logger.info(f"Пользователь {user_id} отправил некорректное название города: {city}.")
-        error_reply("‼️ Отправьте название города, а не команду!")
-        try:
-            bot.delete_message(chat_id, message.message_id)
-        except Exception as e:
-            bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
-        return
-    if not re.match(r'^[A-Za-zА-Яа-яЁё\s\-]+$', city):
-        bot_logger.info(f"Пользователь {user_id} отправил название города с недопустимыми символами: {city}.")
-        error_reply("‼️ Название города может содержать только буквы, пробелы и дефисы!")
-        try:
-            bot.delete_message(chat_id, message.message_id)
-        except Exception as e:
-            bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
-        return
-    updated = update_user_city(user_id, city, message.from_user.username)
-    bot_logger.info(f"Пользователь {user_id} зарегистрировал город: {city}.")
+        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        button_geo = types.KeyboardButton(text="📍 Отправить координаты", request_location=True)
+        keyboard.add(button_geo)
 
-    success_text = f"Добро пожаловать, {message.from_user.first_name}!\n\nТеперь ваш основной город — {city}."
+        try:
+            if last_bot_msg_id:
+                bot.delete_message(chat_id, last_bot_msg_id)
+        except Exception as e:
+            bot_logger.warning(f"Не удалось удалить сообщение {last_bot_msg_id} для пользователя {user_id}: {e}")
+
+        msg = bot.send_message(
+            chat_id,
+            full_text,
+            reply_markup=keyboard  # <-- вставляем клаву обратно
+        )
+        update_data_field("last_bot_message", chat_id, msg.message_id)
+        bot.register_next_step_handler(msg, process_new_city_registration)
+    # --- Обработка геолокации ---
+    if message.location:
+        latitude = message.location.latitude
+        longitude = message.location.longitude
+        city = resolve_city_from_coords(latitude, longitude)
+        if not city:
+            bot_logger.warning(f"Не удалось определить город по координатам ({latitude}, {longitude}) от пользователя {user_id}.")
+            error_reply("Не удалось определить город по координатам. Введите его вручную.")
+            return
+    # --- Обработка текстового ввода ---
+    elif message.text:
+        city = message.text.strip()
+        if city == "/start":
+            bot_logger.info(f"Пользователь {user_id} отправил /start вместо города при регистрации.")
+            start(message)
+            return
+        if city.startswith("/") or not city:
+            bot_logger.info(f"Пользователь {user_id} отправил некорректное название города: {city}.")
+            error_reply("‼️ Отправьте название города, а не команду!")
+            try:
+                bot.delete_message(chat_id, message.message_id)
+            except Exception as e:
+                bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
+            return
+        if not re.match(r'^[A-Za-zА-Яа-яЁё\s\-]+$', city):
+            bot_logger.info(f"Пользователь {user_id} отправил название города с недопустимыми символами: {city}.")
+            error_reply("‼️ Название города может содержать только буквы, пробелы и дефисы!")
+            try:
+                bot.delete_message(chat_id, message.message_id)
+            except Exception as e:
+                bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
+            return
+    else:
+        bot_logger.warning(f"Сообщение от пользователя {user_id} не содержит текста или локации.")
+        error_reply("Пожалуйста, введите город или отправьте координаты.")
+        return
+    # --- Сохраняем город ---
+    updated = update_user_city(user_id, city, message.from_user.username)
+    
+    if updated:
+        bot_logger.info(f"Пользователь {user_id} успешно сменил город на {city}.")
+        success_text = f"Теперь ваш основной город — {city}."
+
+    # --- Отправка успешного сообщения с новым текстом ---
+    base_text = (
+        f"Привет, {message.from_user.first_name}!\n"
+        f"{success_text}\n\n"
+        "☀️ Приятного использования бота!\n"
+    )
+
+    full_text = base_text
+
     last_bot_msg_id = get_data_field("last_bot_message", chat_id)
     try:
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=last_bot_msg_id,
-            text=success_text,
-            parse_mode="HTML"
-        )
-        update_data_field("last_bot_message", chat_id, None)
-        refresh_daily_forecast(chat_id)
+        if last_bot_msg_id:
+            bot.delete_message(chat_id, last_bot_msg_id)
     except Exception as e:
-        bot_logger.warning(f"Не удалось отредактировать сообщение для пользователя {user_id}: {e}")
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception as e:
-        bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
+        bot_logger.warning(f"Не удалось удалить сообщение {last_bot_msg_id} для пользователя {user_id}: {e}")
+    
+    msg = bot.send_message(
+        chat_id,
+        full_text,
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    update_data_field("last_bot_message", chat_id, msg.message_id)
+    refresh_daily_forecast(user_id)
     send_main_menu(chat_id)
 
 

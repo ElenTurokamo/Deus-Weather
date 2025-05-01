@@ -49,6 +49,30 @@ def fetch_weekly_forecast(city):
 
     return response_data["list"]
 
+#РАСШИФРОВКА ГОРОДА
+def resolve_city_from_coords(lat, lon):
+    """Определяет город по координатам через OpenWeather Geocoding API."""
+    try:
+        WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+        url = "http://api.openweathermap.org/geo/1.0/reverse"
+        params = {
+            "lat": lat,
+            "lon": lon,
+            "limit": 1,
+            "appid": WEATHER_API_KEY,
+            "lang": "ru"
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        if response.status_code == 200 and data:
+            city = data[0].get("name")
+            return city
+        else:
+            return None
+    except Exception as e:
+        return None
+    
+    
 #ПОЛУЧЕНИЕ ПРОГНОЗА НА СЕГОДНЯ ИЗ API
 def fetch_today_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")

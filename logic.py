@@ -619,7 +619,7 @@ def convert_precipitation_to_percent(precipitation_mm):
 
 #ОБРАБОТЧИК КОМАНД
 def is_valid_command(text):
-    valid_commands = ["/start", "/weather", "/changecity", "🌎 Погода сегодня", "📅 Прогноз погоды", "⚙️ Настройки"]
+    valid_commands = ["/start", "/weather", "/changecity", "🌎 Погода сейчас", "📅 Прогноз погоды", "⚙️ Настройки"]
     return text in valid_commands
 
 
