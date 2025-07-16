@@ -28,7 +28,7 @@ def get_weather(city):
         "wind_direction": response_data["wind"].get("deg", 0),  
         "wind_gust": response_data["wind"].get("gust", 0), 
         "clouds": response_data["clouds"].get("all", 0),
-        "pressure": round(response_data["main"]["pressure"] * 0.75006),
+        "pressure": round(response_data["main"]["pressure"]),
         "visibility": response_data.get("visibility", 0),
         "coordinates": {
             "lat": response_data["coord"]["lat"],

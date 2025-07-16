@@ -1,4 +1,4 @@
-#ИМОПРТЫ
+#ИМПОРТЫ
 import json
 import time
 import logging
@@ -466,7 +466,7 @@ def send_weather_update(users, city, changes, current_data):
             message += f"{arrow} {label}: {value_str}\n"
 
         # Завершающая строка
-        message += "\n🌤 Природа переменчива, но именно она создает гармонию."
+        message += "\n🌟 Не падай духом — погода ещё наладится."
 
         delete_previous_weather_notification(chat_id)
         sent_msg = bot.send_message(chat_id, message, parse_mode="HTML")
@@ -535,7 +535,10 @@ def check_all_cities():
         city_data = db.query(CheckedCities).filter_by(city_name=city).first()
 
         if city_data and city_data.previous_notify_time:
-            time_diff = datetime.now(timezone.utc) - city_data.previous_notify_time
+            previous = city_data.previous_notify_time
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=timezone.utc)
+            time_diff = datetime.now(timezone.utc) - previous
             if time_diff < timedelta(hours=3):
                 timer_logger.info(f"⏱ Город {city} пропущен — последнее уведомление было {time_diff} назад.")
                 continue
@@ -664,7 +667,7 @@ def update_daily_forecasts():
             )
             timer_logger.info(f"✅ Прогноз обновлён для пользователя {user.user_id}.")
         except Exception as e:
-            timer_logger.error(f"❌ Ошибка при обновлении прогноза {user.user_id}: {e}")
+            timer_logger.info(f"❌ Прогноз не был обновлён для пользователя {user.user_id}")
 
 
 if __name__ == '__main__':

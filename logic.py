@@ -16,7 +16,7 @@ import threading
 
 #СЛОВАРИ
 UNIT_TRANSLATIONS = {
-    "temp": {"C": "°C", "F": "°F", "K": "К"},
+    "temp": {"C": "°C", "F": "°F", "K": "К", "ICE": "🍦"},
     "pressure": {"mmHg": "мм рт.", "mbar": "мбар", "hPa": "гПа", "inHg": "дюйм. рт."},
     "wind_speed": {"m/s": "м/с", "km/h": "км/ч", "mph": "миль/ч"}
 }
@@ -422,10 +422,12 @@ def convert_temperature(value, unit):
         return value * 9/5 + 32
     elif unit == "K":
         return value + 273.15
+    elif unit == "ICE":
+        return round(-value / 18, 1)
 
 def convert_pressure(value, unit):
     logging.debug(f"Converting {value} to {unit}")
-    conversions = {"mmHg": 1, "mbar": 1.333, "hPa": 1.333, "inHg": 0.03937}
+    conversions = {"mmHg": 0.75006, "mbar": 1, "hPa": 1, "inHg": 0.02953}
     return round(value * conversions[unit], 1)
 
 def convert_wind_speed(value, unit):
@@ -543,7 +545,7 @@ def generate_notification_settings_keyboard(user):
 """ВЫБОР ЕДИНИЦ ИЗМЕРЕНИЯ"""
 def generate_unit_selection_keyboard(current_value, unit_type):
     unit_options = {
-        "temp": [("°C (Цельсий)", "C"), ("°F (Фаренгейт)", "F"), ("K (Кельвин)", "K")],
+        "temp": [("°C (Цельсий)", "C"), ("°F (Фаренгейт)", "F"), ("K (Кельвин)", "K"), ("Мороженки (🍦)", "ICE")],
         "pressure": [("мм рт. ст.", "mmHg"), ("мбар", "mbar"), ("гПа", "hPa"), ("дюйм. рт. ст.", "inHg")],
         "wind_speed": [("м/с", "m/s"), ("км/ч", "km/h"), ("миль/ч", "mph")]
     }
@@ -599,7 +601,7 @@ def format_weather_data(data, user):
         if tracked_params.get(param, False): 
             weather_text += f"▸ {label}: {value}\n"
 
-    return weather_text + "\n🌤 Погода никогда не стоит на месте."
+    return weather_text + "\n🍉 Какой бы ни была погода — этот день прекрасен!"
 
 
 def format_change(label, old_value, new_value, unit=""):
@@ -619,7 +621,7 @@ def convert_precipitation_to_percent(precipitation_mm):
 
 #ОБРАБОТЧИК КОМАНД
 def is_valid_command(text):
-    valid_commands = ["/start", "/weather", "/changecity", "🌎 Погода сейчас", "📅 Прогноз погоды", "⚙️ Настройки"]
+    valid_commands = ["/start", "/weather", "/changecity", "🔅 Погода сейчас", "📅 Прогноз погоды", "⚙️ Настройки"]
     return text in valid_commands
 
 
