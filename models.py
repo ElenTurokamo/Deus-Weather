@@ -87,7 +87,7 @@ class CheckedCities(Base):
     precipitation = Column(Float, nullable=True) 
 
     last_checked = Column(DateTime, server_default=func.now())
-    previous_notify_time = Column(DateTime, nullable=True)
+    previous_notify_time = Column(DateTime(timezone=True), nullable=True)
 
 
 class LocalVars(Base):

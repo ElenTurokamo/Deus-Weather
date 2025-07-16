@@ -89,7 +89,7 @@ def handle_all_messages(message):
             menu_actions[message.text](message)
     else:
         bot_logger.info(f"▸ Пользователь {user_id} отправил дичь. Вежливо просим его попробовать снова.")
-        bot.send_message(chat_id, "Я вас не понял. Используйте команды меню!")
+        bot.send_message(chat_id, "😔 Я вас не понял. Используйте команды меню!")
         send_main_menu(message.chat.id)
 
 
@@ -112,7 +112,7 @@ def send_main_menu(chat_id):
     """Отправка главного меню пользователю."""
     delete_last_menu_message(chat_id)
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    main_keyboard.row("🌎 Погода сейчас", "📅 Прогноз погоды")
+    main_keyboard.row("🔅 Погода сейчас", "📅 Прогноз погоды")
     main_keyboard.row("⚙️ Настройки")
     menu_option(chat_id, reply_markup=main_keyboard)
 
@@ -122,7 +122,7 @@ def send_settings_menu(chat_id):
     delete_last_menu_message(chat_id)
     settings_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     settings_keyboard.row("🏙 Изменить город", "🔔 Уведомления")
-    settings_keyboard.row("🌦 Погодные данные", "📏 Единицы измерения")
+    settings_keyboard.row("☀️ Погодные данные", "📏 Единицы измерения")
     settings_keyboard.row("↩ Назад")
     settings_option(chat_id, reply_markup=settings_keyboard)
 
@@ -158,7 +158,7 @@ def forecast_handler(call):
         bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
     try:
-        forecast_text = "\n\n".join([format_forecast(day, user) for day in forecast_data]) + "\n\n🌤 Всё, что изменчиво, дарует мудрость."
+        forecast_text = "\n\n".join([format_forecast(day, user) for day in forecast_data]) + "\n\n☀️ Летом без жары никуда."
     except KeyError as e:
         bot_logger.error(f"Ключ отсутствует в данных прогноза: {e}")
         bot.send_message(chat_id, "⚠ Произошла ошибка при обработке прогноза.")
@@ -749,7 +749,7 @@ def settings_back_to_main_menu(message):
 
 
 @safe_execute
-@bot.message_handler(func=lambda message: message.text == "🌦 Погодные данные")
+@bot.message_handler(func=lambda message: message.text == "☀️ Погодные данные")
 def weather_data_settings(message):
     """Обработчик кнопки 'Погодные данные' в настройках"""
     chat_id = message.chat.id
@@ -810,7 +810,7 @@ def menu_handler(message):
     """Универсальный обработчик для всех команд бота"""
     menu_actions[message.text](message)
 menu_actions = {
-    "🌎 Погода сейчас": weather,
+    "🔅 Погода сейчас": weather,
     "📅 Прогноз погоды": forecast_menu_handler,
     "⚙️ Настройки": lambda msg: send_settings_menu(msg.chat.id),
     # "👥 Друзья": feature_in_development,
@@ -820,7 +820,7 @@ menu_actions = {
     "🔔 Уведомления": notification_settings,
     "↩ Назад": settings_back_to_main_menu,
     "📏 Единицы измерения": lambda msg: format_settings(msg),
-    "🌦 Погодные данные": generate_weather_data_keyboard
+    "☀️ Погодные данные": generate_weather_data_keyboard
 }
 
 
