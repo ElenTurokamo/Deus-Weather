@@ -10,12 +10,13 @@ load_dotenv()
 
 def get_weather(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
+    url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
     
     response = requests.get(url)
     response_data = response.json()
     
     if response_data.get("cod") != 200:
+
         return None
 
     return {
@@ -39,12 +40,13 @@ def get_weather(city):
 #ПОЛУЧЕНИЕ ПРОГНОЗА НА НЕДЕЛЮ ИЗ API
 def fetch_weekly_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-    url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
+    url = f"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
 
     response = requests.get(url)
     response_data = response.json()
 
     if response_data.get("cod") != "200":
+
         return None
 
     return response_data["list"]
@@ -54,7 +56,7 @@ def resolve_city_from_coords(lat, lon):
     """Определяет город по координатам через OpenWeather Geocoding API."""
     try:
         WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-        url = "http://api.openweathermap.org/geo/1.0/reverse"
+        url = "https://api.openweathermap.org/geo/1.0/reverse"
         params = {
             "lat": lat,
             "lon": lon,
@@ -76,12 +78,13 @@ def resolve_city_from_coords(lat, lon):
 #ПОЛУЧЕНИЕ ПРОГНОЗА НА СЕГОДНЯ ИЗ API
 def fetch_today_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-    url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
+    url = f"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
 
     response = requests.get(url)
     response_data = response.json()
 
     if response_data.get("cod") != "200":
+
         return None
 
     return response_data["list"] 
@@ -89,11 +92,12 @@ def fetch_today_forecast(city):
 #ПОЛУЧЕНИЕ ПРОГНОЗА НА СЕГОДНЯ ИЗ API
 def fetch_tomorrow_forecast(city):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-    url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
+    url = f"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
     response = requests.get(url)
     response_data = response.json()
 
     if response_data.get("cod") != "200":
+
         return None
 
     return response_data["list"] 

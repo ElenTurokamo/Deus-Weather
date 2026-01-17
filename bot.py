@@ -339,6 +339,7 @@ def weather(message):
     weather_data = get_weather(user.preferred_city)
     if not weather_data:
         bot.reply_to(message, "Не удалось получить данные о погоде.")
+        print(weather_data)
         send_main_menu(message.chat.id)
         return
     bot_logger.info(f"▸ Погода в {user.preferred_city} успешно получена.")

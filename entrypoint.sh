@@ -8,6 +8,15 @@ engine = create_engine(os.getenv('DATABASE_URL', 'mysql://root:aMbmQeqiDUgRNwQYh
 Base.metadata.create_all(engine)
 "
 
-python bot.py & python weather_timer.py &
+if [ -z "$BOT_TOKEN" ]; then
+  echo "❌ BOT_TOKEN не установлен!"
+  exit 1
+fi
 
+# создаём папку логов безопасно
+mkdir -p logs
+
+# запускаем оба скрипта в foreground через `wait`
+python bot.py &
+python weather_timer.py &
 wait
