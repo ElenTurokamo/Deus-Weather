@@ -601,7 +601,7 @@ def format_weather_data(data, user):
         if tracked_params.get(param, False): 
             weather_text += f"▸ {label}: {value}\n"
 
-    return weather_text + "\n🍉 Какой бы ни была погода — этот день прекрасен!"
+    return weather_text + "\n⛄️Одевайтесь теплее!"
 
 
 def format_change(label, old_value, new_value, unit=""):
@@ -884,7 +884,7 @@ def get_weather_summary_description(forecast_data, user):
             bad_weather_periods.append((timestamp, description))
 
     if not bad_weather_periods:
-        return "🌤 Сегодня осадков не ожидается!"
+        return "🌤 Сегодня осадков не ожидается."
 
     # Группируем события
     groups = group_bad_weather_periods(bad_weather_periods)
@@ -907,4 +907,4 @@ def get_weather_summary_description(forecast_data, user):
                 start_str = start_time.strftime("%H:%M")
                 return f"{emoji} {main_description} ожидается в {start_str}."
 
-    return "🌤 Сегодня осадков не ожидается!"
+    return "🌤 Сегодня осадков не ожидается."
