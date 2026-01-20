@@ -590,11 +590,11 @@ def send_daily_forecast(test_time=None):
             timer_logger.debug(f"🚫 Уведомления отключены у {user.user_id}, пропускаем.")
             continue
 
-        user_tz = ZoneInfo(user.timezone or "UTC")
+        user_tz = ZoneInfo(user.timezone or "Asia/Almaty")
         user_time = test_time.astimezone(user_tz) if test_time else datetime.now(user_tz)
         timer_logger.debug(f"▸ {user.user_id} ({user.preferred_city}): {user_time} (локальное)")
 
-        if user_time.hour == 6 and user_time.minute < 10:
+        if user_time.hour == 6 and user_time.minute < 30:
             raw_forecast = get_today_forecast(user.preferred_city, user)
             if not raw_forecast:
                 timer_logger.warning(f"⚠ `get_today_forecast` не вернула данные для {user.preferred_city}!")
@@ -638,7 +638,7 @@ def update_daily_forecasts():
     timer_logger.info(f"▸ Найдено пользователей для прогноза: {len(users)}")
 
     for user in users:
-        user_tz = ZoneInfo(user.timezone or "UTC")
+        user_tz = ZoneInfo(user.timezone or "Asia/Almaty")
         user_time = datetime.now(user_tz)
 
         last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
