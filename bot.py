@@ -1274,6 +1274,8 @@ def process_new_city(message, show_menu=False):
 def process_new_city_registration(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
+    user = get_user(chat_id)
+    lang = get_user_lang(user)
 
     def error_reply(comment):
         base_text = get_text("greet_new", "lang").format(name=message.from_user.first_name)
@@ -1305,7 +1307,7 @@ def process_new_city_registration(message):
         city = resolve_city_from_coords(latitude, longitude)
         if not city:
             bot_logger.warning(f"Не удалось определить город по координатам ({latitude}, {longitude}) от пользователя {user_id}.")
-            error_reply(get_text("error_city_not_found_coords", "lang"))
+            error_reply(get_text("error_city_not_found_coords", lang))
             return
     # --- Обработка текстового ввода ---
     elif message.text:
@@ -1316,7 +1318,7 @@ def process_new_city_registration(message):
             return
         if city.startswith("/") or not city:
             bot_logger.info(f"Пользователь {user_id} отправил некорректное название города: {city}.")
-            error_reply(get_text("error_invalid_city_command", "lang"))
+            error_reply(get_text("error_invalid_city_command", lang))
             try:
                 bot.delete_message(chat_id, message.message_id)
             except Exception as e:
@@ -1324,7 +1326,7 @@ def process_new_city_registration(message):
             return
         if not re.match(r'^[A-Za-zА-Яа-яЁё\s\-]+$', city):
             bot_logger.info(f"Пользователь {user_id} отправил название города с недопустимыми символами: {city}.")
-            error_reply(get_text("error_invalid_city_chars", "lang"))
+            error_reply(get_text("error_invalid_city_chars", lang))
             try:
                 bot.delete_message(chat_id, message.message_id)
             except Exception as e:
@@ -1332,19 +1334,19 @@ def process_new_city_registration(message):
             return
     else:
         bot_logger.warning(f"Сообщение от пользователя {user_id} не содержит текста или локации.")
-        error_reply(get_text("error_no_input", "lang"))
+        error_reply(get_text("error_no_input", lang))
         return
 
     # --- Сохраняем город ---
     updated = update_user_city(user_id, city, message.from_user.username)
     if updated:
         bot_logger.info(f"Пользователь {user_id} успешно сменил город на {city}.")
-        success_text = get_text("changecity_success_update", "lang").format(city=city)
+        success_text = get_text("changecity_success_update", lang).format(city=city)
     else:
         bot_logger.info(f"Пользователь {user_id} повторно установил город: {city}.")
         success_text = get_text("changecity_success_update", "lang").format(city=city)
 
-    base_text = f"Привет, {message.from_user.first_name}!\n{success_text}\n\n{get_text('greet_success_end', 'ru')}"
+    base_text = f"Привет, {message.from_user.first_name}!\n{success_text}\n\n{get_text('greet_success_end', lang)}"
     full_text = base_text
 
     last_bot_msg_id = get_data_field("last_bot_message", chat_id)
