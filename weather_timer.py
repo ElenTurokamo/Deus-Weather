@@ -10,8 +10,14 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from functools import wraps
 from models import CheckedCities, User, Base
-from logic import safe_execute, convert_pressure, convert_temperature, convert_wind_speed, decode_tracked_params, get_weather_summary_description
-from logic import UNIT_TRANSLATIONS, get_all_users, decode_notification_settings, get_wind_direction, get_wind_direction, get_today_forecast
+# ДОБАВЛЕНЫ: get_user_lang, get_text, get_translation_dict
+from logic import (
+    safe_execute, convert_pressure, convert_temperature, convert_wind_speed, 
+    decode_tracked_params, get_weather_summary_description, 
+    get_user_lang, get_text, get_translation_dict, # <-- ВАЖНО
+    get_all_users, decode_notification_settings, get_wind_direction, 
+    get_today_forecast
+)
 from weather import get_weather, fetch_today_forecast
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
@@ -263,6 +269,7 @@ def check_weather_changes(city, current_data):
 
 def get_threshold(param):
     """Возвращает порог изменения для уведомления"""
+    # Логика порогов остается без изменений, так как она привязана к системным значениям
     thresholds = {
         "description": [
                         # Грозы
@@ -306,6 +313,11 @@ def get_weather_emoji(current_data):
         "снег": "🌨️",
         "небольшой снег": "🌨️",
         "град": "🌨️",
+        # English mappings (simple fallback)
+        "thunderstorm": "⛈️",
+        "rain": "☔",
+        "snow": "🌨️",
+        "drizzle": "🌧️",
     }
 
     description = current_data.get("description", "").lower()
@@ -333,6 +345,11 @@ def send_weather_update(users, city, changes, current_data):
             continue
 
         chat_id = user.user_id
+        # --- АДАПТАЦИЯ ЯЗЫКА ---
+        lang = get_user_lang(user)
+        unit_trans = get_translation_dict("unit_translations", lang)
+        labels = get_translation_dict("weather_data_labels", lang)
+        # -----------------------
 
         # Удаляем старое меню, если оно было
         last_menu_id = get_data_field("last_menu_message", chat_id)
@@ -345,55 +362,63 @@ def send_weather_update(users, city, changes, current_data):
 
         # Заголовок с эмодзи и сообщением об изменении погоды
         emoji = get_weather_emoji(current_data)
-        header = f"<blockquote>{emoji} Внимание!</blockquote>\nПогода в г.{city} изменилась!"
-        message = f"<b>{header}</b>\n{'─' * min(len(header), 21)}\n"
+        
+        # ЛОКАЛИЗАЦИЯ ЗАГОЛОВКА
+        header_text = get_text("notification_header", lang).format(emoji=emoji, city=city)
+        message = f"{header_text}\n{'─' * 21}\n"
 
         if "temp" in current_data:
             current_data["temperature"] = current_data["temp"]
 
+        # Конфигурация параметров, использующая локализованные метки
         param_config = {
-            "description": ("Погода", "", lambda x: str(x).capitalize()),
+            "description": (labels.get("description", "Погода"), "", lambda x: str(x).capitalize()),
             "temperature": (
-                "Температура", "", 
-                lambda x: f"{round(convert_temperature(x, user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"
+                labels.get("temperature", "Температура"), "", 
+                lambda x: f"{round(convert_temperature(x, user.temp_unit))}{unit_trans['temp'].get(user.temp_unit, '')}"
             ),
             "feels_like": (
-                "Ощущается как", "", 
-                lambda x: f"{round(convert_temperature(x, user.temp_unit))}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"
+                labels.get("feels_like", "Ощущается как"), "", 
+                lambda x: f"{round(convert_temperature(x, user.temp_unit))}{unit_trans['temp'].get(user.temp_unit, '')}"
             ),
             "humidity": (
-                "Влажность", "%", 
+                labels.get("humidity", "Влажность"), "%", 
                 lambda x: f"{int(x)}%"
             ),
             "precipitation": (
-                "Вероятность осадков", "%", 
+                labels.get("precipitation", "Вероятность осадков"), "%", 
                 lambda x: f"{int(x)}%"
             ),
             "pressure": (
-                "Давление", "", 
-                lambda x: f"{round(convert_pressure(x, user.pressure_unit))} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}"
+                labels.get("pressure", "Давление"), "", 
+                lambda x: f"{round(convert_pressure(x, user.pressure_unit))} {unit_trans['pressure'].get(user.pressure_unit, '')}"
             ),
             "wind_speed": (
-                "Скорость ветра", "", 
-                lambda x: f"{round(convert_wind_speed(x, user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"
+                labels.get("wind_speed", "Скорость ветра"), "", 
+                lambda x: f"{round(convert_wind_speed(x, user.wind_speed_unit))} {unit_trans['wind_speed'].get(user.wind_speed_unit, '')}"
             ),
             "wind_direction": (
-                "Направление ветра", "", 
-                lambda x: f"{get_wind_direction(float(x))} ({int(float(x))}°)"
+                labels.get("wind_direction", "Направление ветра"), "", 
+                lambda x: f"{get_wind_direction(float(x), lang)} ({int(float(x))}°)"
             ),
             "wind_gust": (
-                "Порывы ветра", "", 
-                lambda x: f"{round(convert_wind_speed(x, user.wind_speed_unit))} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"
+                labels.get("wind_gust", "Порывы ветра"), "", 
+                lambda x: f"{round(convert_wind_speed(x, user.wind_speed_unit))} {unit_trans['wind_speed'].get(user.wind_speed_unit, '')}"
             ),
             "clouds": (
-                "Облачность", "%", 
+                labels.get("clouds", "Облачность"), "%", 
                 lambda x: f"{int(x)}%"
             ),
             "visibility": (
-                "Видимость", "м", 
+                labels.get("visibility", "Видимость"), "м", 
                 lambda x: f"{int(x)} м"
             ),
         }
+        
+        arrow_up = get_text("notification_trend_up", lang)
+        arrow_down = get_text("notification_trend_down", lang)
+        arrow_default = get_text("notification_trend_arrow", lang)
+
         # Проходим по всем параметрам, даже если они не изменились
         for param, (label, _, formatter) in param_config.items():
             if not tracked_params.get(param, False):
@@ -405,12 +430,12 @@ def send_weather_update(users, city, changes, current_data):
             if current is None:
                 continue
 
-            arrow = "▸"
-            value_str = formatter(current)  # значение по умолчанию — текущее, уже с нужной единицей
+            arrow = arrow_default
+            value_str = formatter(current)  # значение по умолчанию — текущее
 
             if param == "description":
                 if last and current and str(last).lower() != str(current).lower():
-                    arrow = "⇑"
+                    arrow = arrow_up # Для описания просто показываем изменение
                     value_str = f"<b>{str(last).capitalize()} ➝ {str(current).capitalize()}</b>"
             else:
                 try:
@@ -422,42 +447,44 @@ def send_weather_update(users, city, changes, current_data):
                         if param == "temperature":
                             new = round(convert_temperature(raw_current, user.temp_unit))
                             old = round(convert_temperature(raw_last, user.temp_unit))
-                            unit = UNIT_TRANSLATIONS["temp"][user.temp_unit]
+                            unit = unit_trans["temp"][user.temp_unit]
                         elif param == "feels_like":
                             new = round(convert_temperature(raw_current, user.temp_unit))
                             old = round(convert_temperature(raw_last, user.temp_unit))
-                            unit = UNIT_TRANSLATIONS["temp"][user.temp_unit]
+                            unit = unit_trans["temp"][user.temp_unit]
                         elif param == "pressure":
                             new = round(convert_pressure(raw_current, user.pressure_unit))
                             old = round(convert_pressure(raw_last, user.pressure_unit))
-                            unit = UNIT_TRANSLATIONS["pressure"][user.pressure_unit]
+                            unit = unit_trans["pressure"][user.pressure_unit]
                         elif param in ("wind_speed", "wind_gust"):
                             new = round(convert_wind_speed(raw_current, user.wind_speed_unit))
                             old = round(convert_wind_speed(raw_last, user.wind_speed_unit))
-                            unit = UNIT_TRANSLATIONS["wind_speed"][user.wind_speed_unit]
+                            unit = unit_trans["wind_speed"][user.wind_speed_unit]
                         elif param == "visibility":
                             new = int(raw_current)
                             old = int(raw_last)
-                            unit = "м"
+                            unit = "м" # Можно добавить в словарь, если нужно
                         elif param in ("humidity", "precipitation", "clouds"):
                             new = int(raw_current)
                             old = int(raw_last)
                             unit = "%"
                         elif param == "wind_direction":
-                            new_direction = get_wind_direction(raw_current)
-                            old_direction = get_wind_direction(raw_last)
+                            new_direction = get_wind_direction(raw_current, lang)
+                            old_direction = get_wind_direction(raw_last, lang)
                             new_str = f"{new_direction} ({int(raw_current)}°)"
                             old_str = f"{old_direction} ({int(raw_last)}°)"
                         else:
                             new, old, unit = raw_current, raw_last, ""
 
-                        trend = "⇑" if new > old else "⇓"
-                        if param in {"temperature", "feels_like", "precipitation", "clouds", "humidity"}:
-                            value_str = f"<b>{old} ➝ {new}{unit}</b>"
-                        elif param in {"wind_direction"}:
-                            value_str = f"<b>{old_str} ➝ {new_str}</b>"
-                        else:
+                        trend = arrow_up if new > old else arrow_down
+                        
+                        if param == "wind_direction":
+                             value_str = f"<b>{old_str} ➝ {new_str}</b>"
+                        elif param in {"temperature", "feels_like", "pressure", "wind_speed", "wind_gust"}:
                             value_str = f"<b>{old} ➝ {new} {unit}</b>"
+                        else:
+                            value_str = f"<b>{old} ➝ {new}{unit}</b>"
+                            
                         arrow = trend
                 except Exception as e:
                     timer_logger.debug(f"⚠ Ошибка при сравнении {param}: {e}")
@@ -466,7 +493,7 @@ def send_weather_update(users, city, changes, current_data):
             message += f"{arrow} {label}: {value_str}\n"
 
         # Завершающая строка
-        message += "\n🌟 Не падай духом — погода ещё наладится."
+        message += get_text("notification_footer", lang)
 
         delete_previous_weather_notification(chat_id)
         sent_msg = bot.send_message(chat_id, message, parse_mode="HTML")
@@ -515,6 +542,7 @@ def check_all_cities():
             break
         timer_logger.info(f"🔄 Попытка #{attempt}: осталось проверить {len(remaining)} городов.")
         for city in remaining:
+            # Получаем погоду (используем дефолтный RU, так как мы только сравниваем значения)
             weather_data = get_weather(city)
             if weather_data and check_weather_changes(city, weather_data):
                 checked_cities.add(city)
@@ -589,6 +617,9 @@ def send_daily_forecast(test_time=None):
         if not settings.get("forecast_notifications", False):
             timer_logger.debug(f"🚫 Уведомления отключены у {user.user_id}, пропускаем.")
             continue
+        
+        # ЛОКАЛИЗАЦИЯ
+        lang = get_user_lang(user)
 
         user_tz = ZoneInfo(user.timezone or "Asia/Almaty")
         user_time = test_time.astimezone(user_tz) if test_time else datetime.now(user_tz)
@@ -601,11 +632,13 @@ def send_daily_forecast(test_time=None):
                 continue
 
             updated_time = user_time.strftime("%H:%M")
+            title = get_text("daily_forecast_title", lang)
+            
             forecast_message = (
-                "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
+                f"{title}\n"
                 # f"[Обновлено в {updated_time}]\n"
                 + format_forecast(raw_forecast, user)
-                + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city), user)
+                + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city, lang=lang), user)
             )
 
             last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
@@ -638,6 +671,7 @@ def update_daily_forecasts():
     timer_logger.info(f"▸ Найдено пользователей для прогноза: {len(users)}")
 
     for user in users:
+        lang = get_user_lang(user)
         user_tz = ZoneInfo(user.timezone or "Asia/Almaty")
         user_time = datetime.now(user_tz)
 
@@ -652,11 +686,13 @@ def update_daily_forecasts():
             continue
 
         updated_time = user_time.strftime("%H:%M")
+        title = get_text("daily_forecast_title", lang)
+        
         forecast_message = (
-            "<blockquote>📅 Ежедневный прогноз погоды</blockquote>\n"
+            f"{title}\n"
             # f"[Обновлено в {updated_time}]\n"
             + format_forecast(raw_forecast, user)
-            + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city), user)
+            + "\n\n" + get_weather_summary_description(fetch_today_forecast(user.preferred_city, lang=lang), user)
         )
         try:
             bot.edit_message_text(

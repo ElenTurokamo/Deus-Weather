@@ -54,6 +54,7 @@ class User(Base):
     selected_titles = Column(String(512), default="[]")
     profile_card = Column(String(255), default="default.png")  
     logged = Column(Boolean, default=False) 
+    language = Column(String, default="ru") 
 
 
 class CheckedCities(Base):

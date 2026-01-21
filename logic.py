@@ -7,6 +7,7 @@ from weather import fetch_today_forecast, fetch_weekly_forecast, fetch_tomorrow_
 from models import User, LocalVars
 from datetime import date, timedelta, datetime, timezone
 from zoneinfo import ZoneInfo
+from texts import TEXTS, get_api_lang_code 
 
 import os
 import logging
@@ -14,77 +15,17 @@ import importlib
 import json
 import threading
 
-#СЛОВАРИ
-UNIT_TRANSLATIONS = {
-    "temp": {"C": "°C", "F": "°F", "K": "К", "ICE": "🍦"},
-    "pressure": {"mmHg": "мм рт.", "mbar": "мбар", "hPa": "гПа", "inHg": "дюйм. рт."},
-    "wind_speed": {"m/s": "м/с", "km/h": "км/ч", "mph": "миль/ч"}
-}
+#АДАПТАЦИЯ ЯЗЫКА ПОЛЬЗОВАТЕЛЯ
+def get_user_lang(user):
+    return getattr(user, 'language', 'ru') or 'ru'
 
-MONTHS_RU = {
-    1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
-    7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
-}
+def get_text(key, lang):
+    lang = lang or "ru"
+    return TEXTS.get(lang, TEXTS["ru"]).get(key, f"MISSING_{key}")
 
-WEEKDAYS_RU = {
-    "Monday": "Понедельник",
-    "Tuesday": "Вторник",
-    "Wednesday": "Среда",
-    "Thursday": "Четверг",
-    "Friday": "Пятница",
-    "Saturday": "Суббота",
-    "Sunday": "Воскресенье",
-}
-
-WIND_DIRECTIONS = {
-    (337.5, 360): "Север",
-    (0, 22.5): "Север",
-    (22.5, 67.5): "Северо-Восток",
-    (67.5, 112.5): "Восток",
-    (112.5, 157.5): "Юго-Восток",
-    (157.5, 202.5): "Юг",
-    (202.5, 247.5): "Юго-Запад",
-    (247.5, 292.5): "Запад",
-    (292.5, 337.5): "Северо-Запад"
-}
-
-BAD_WEATHER_DESCRIPTIONS = [
-    "Гроза с небольшим дождём", "Гроза с дождём", "Гроза с сильным дождём",
-    "Слабая гроза", "Гроза", "Сильная гроза", "Неустойчивая гроза",
-    "Гроза с лёгкой моросью", "Гроза с моросью", "Гроза с сильной моросью",
-
-    "Лёгкая морось", "Морось", "Сильная морось",
-    "Лёгкий моросящий дождь", "Моросящий дождь", "Сильный моросящий дождь",
-    "Ливень и морось", "Сильный ливень и морось", "Моросящий ливень",
-
-    "Небольшой дождь", "Умеренный дождь", "Сильный дождь", "Очень сильный дождь",
-    "Чрезвычайно сильный дождь", "Ледяной дождь",
-    "Лёгкий ливень", "Ливень", "Сильный ливень", "Неустойчивый ливень",
-
-    "Небольшой снег", "Снег", "Сильный снег",
-    "Мокрый снег", "Слабый ливень с мокрым снегом", "Ливень с мокрым снегом",
-    "Небольшой дождь со снегом", "Дождь со снегом",
-    "Слабый ливень со снегом", "Ливень со снегом", "Сильный ливень со снегом",
-]
-
-WEATHER_EMOJI_MAP = {
-    "гроза": "🌩",
-    "морось": "🌫",
-    "дождь": "☔️",
-    "ливень": "🌧",
-    "снег": "❄️",
-    "туман": "🌁",
-}
-
-SEVERITY_MAP = {
-    "гроза": 5,
-    "сильный ливень": 4,
-    "сильный снег": 4,
-    "ливень": 3,
-    "дождь": 2,
-    "морось": 1,
-}
-
+def get_translation_dict(category, lang="ru"):
+    lang = lang or "ru"
+    return TEXTS.get(lang, TEXTS["ru"]).get(category, {})
 
 #ВЗАИМОДЕЙСТВИЕ С БД
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -225,12 +166,12 @@ def decode_tracked_params(tracked_params):
         "feels_like": True,
         "humidity": True,
         "precipitation": True,
-        "pressure": True,
+        "pressure": False,
         "wind_speed": True,
         "visibility": True,
         "wind_direction": False, 
         "wind_gust": False,     
-        "clouds": False 
+        "clouds": True 
     }
     if isinstance(tracked_params, str):
         try:
@@ -435,11 +376,13 @@ def convert_wind_speed(value, unit):
     conversions = {"m/s": 1, "km/h": 3.6, "mph": 2.23694}
     return round(value * conversions[unit], 1)
 
-def get_wind_direction(degree):
-    for (start, end), direction in WIND_DIRECTIONS.items():
+def get_wind_direction(degree, lang="ru"):
+    degree %= 360
+    directions = get_translation_dict("wind_directions", lang)
+    for (start, end), direction in directions.items():
         if start <= degree < end:
             return direction
-    return "Неопределено"
+    return get_text("unknown_direction", lang)
 
 
 #ЗАЩИТА ОТ КРАША
@@ -452,9 +395,11 @@ def safe_execute(func):
             logging.error(f"Ошибка в функции {func.__name__}: {str(e)} | Аргументы: {args}, {kwargs}")
 
             if args and hasattr(args[0], "chat"):
-                bot.reply_to(args[0],
-                             "Упс... Похоже, произошли небольшие технические шоколадки!\n"
-                             "Отправьте повторный запрос немного позже ~o~")
+                user_id = args[0].from_user.id
+                user = get_user(user_id)
+                lang = get_user_lang(user)
+                
+                bot.reply_to(args[0], get_text("error_technical_glitch", lang))
     return wrapper
 
 
@@ -474,134 +419,195 @@ def log_action(action, message):
     logging.debug(log_message)
 
 #КЛАВИАТУРЫ
-def generate_forecast_keyboard():
+def generate_forecast_keyboard(chat_id):
     """Создает клавиатуру для сообщения с меню прогноза погоды"""
+    user = get_user(chat_id)
+    lang = get_user_lang(user)
+
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton("🌤 Сегодня", callback_data="forecast_today"))
-    keyboard.add(types.InlineKeyboardButton("🌧 Завтра", callback_data="forecast_tomorrow"))
-    keyboard.add(types.InlineKeyboardButton("📆 Неделя", callback_data="forecast_week"))
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_from_forecast_menu"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_forecast_today", lang), callback_data="forecast_today"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_forecast_tomorrow", lang), callback_data="forecast_tomorrow"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_forecast_week", lang), callback_data="forecast_week"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_back", lang), callback_data="back_from_forecast_menu"))
     return keyboard
 
-def generate_format_keyboard():
+
+def generate_format_keyboard(lang):
     """ЕДИНИЦЫ ИЗМЕРЕНИЯ ДАННЫХ"""
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton("Температура", callback_data="change_temp_unit"))
-    keyboard.add(types.InlineKeyboardButton("Давление", callback_data="change_pressure_unit"))
-    keyboard.add(types.InlineKeyboardButton("Скорость ветра", callback_data="change_wind_speed_unit"))
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
+    keyboard.add(types.InlineKeyboardButton(get_text("unit_temp_label", lang), callback_data="change_temp_unit"))
+    keyboard.add(types.InlineKeyboardButton(get_text("unit_pressure_label", lang), callback_data="change_pressure_unit"))
+    keyboard.add(types.InlineKeyboardButton(get_text("unit_wind_speed_label", lang), callback_data="change_wind_speed_unit"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_save", lang), callback_data="back_to_settings"))
     return keyboard
+
 
 
 def generate_weather_data_keyboard(user):
     """Создаёт клавиатуру для выбора отображаемых данных (2 столбца)"""
-    options = {
-        "description": "Описание",
-        "temperature": "Температура",
-        "humidity": "Влажность",
-        "precipitation": "Шанс осадков",
-        "pressure": "Давление",
-        "wind_speed": "Скорость ветра",
-        "visibility": "Видимость",
-        "feels_like": "Мнимая тем-ра",
-        "clouds": "Облачность",
-        "wind_direction": "Курс ветра",
-        "wind_gust": "Порывы ветра"
-    }
-
-    tracked_params = decode_tracked_params(user.tracked_weather_params)
+    lang = get_user_lang(user)
+    labels = get_translation_dict("weather_data_labels", lang)
+    # Используем корректное поле из модели пользователя
+    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
+    
     keyboard = types.InlineKeyboardMarkup(row_width=2) 
     buttons = [
         types.InlineKeyboardButton(
-            f"{'✅' if tracked_params.get(key, False) else ''} {label}",
+            f"{'✅' if tracked_params.get(key, False) else '❌'} {label}",
             callback_data=f"toggle_weather_param_{key}"
         )
-        for key, label in options.items()
+        for key, label in labels.items()
     ]
     keyboard.add(*buttons)
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_back", lang), callback_data="back_to_settings"))
     return keyboard
+    
+def generate_language_keyboard(user):
+    """Создаёт клавиатуру для выбора языка"""
+    # Текущий язык пользователя
+    current_lang = get_user_lang(user)
+    
+    # Словарь доступных языков: код -> название кнопки
+    languages = {
+        "ru": "🇷🇺 Русский",
+        "en": "🇺🇸 English",
+        "kk": "🇰🇿 Қазақша"
+    }
 
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    
+    buttons = []
+    for code, label in languages.items():
+        # Ставим галочку, если язык выбран
+        icon = "✅ " if code == current_lang else ""
+        buttons.append(
+            types.InlineKeyboardButton(
+                text=f"{icon}{label}",
+                callback_data=f"set_lang_{code}"
+            )
+        )
+    
+    keyboard.add(*buttons)
+    
+    back_text = get_text("btn_back", current_lang)
+    keyboard.add(types.InlineKeyboardButton(back_text, callback_data="back_to_settings"))
+    
+    return keyboard
 
 def generate_notification_settings_keyboard(user):
     """Создаёт клавиатуру для выбора настроек уведомлений"""
-    options = {
-        "weather_threshold_notifications": "Оповещения об изменении погоды",
-        "forecast_notifications": "Ежедневный прогноз",
-        "bot_notifications": "Новости бота"
-    }
-
-    notification_settings = decode_notification_settings(user.notifications_settings)
+    lang = get_user_lang(user)
+    labels = get_translation_dict("notification_labels", lang)
+    
+    notification_settings = decode_notification_settings(getattr(user, 'notifications_settings', 0))
     keyboard = types.InlineKeyboardMarkup()
 
-    for key, label in options.items():
-        icon = "✅" if notification_settings.get(key, False) else ""
-        keyboard.add(types.InlineKeyboardButton(f"{icon} {label}", callback_data=f"toggle_notification_{key}"))
+    for key, label in labels.items():
+        status_emoji = "✅ " if notification_settings.get(key, False) else "❌ "
+        keyboard.add(types.InlineKeyboardButton(
+            f"{status_emoji}{label}", 
+            callback_data=f"toggle_notification_{key}"
+        ))
 
-    keyboard.add(types.InlineKeyboardButton("↩ Назад", callback_data="back_to_settings"))
+    keyboard.add(types.InlineKeyboardButton(get_text("btn_back", lang), callback_data="back_to_settings"))
     return keyboard
 
+def generate_main_menu_keyboard(user):
+    """Создает главную клавиатуру (Reply) с учетом языка"""
+    lang = get_user_lang(user)
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    
+    # Тексты кнопок берем из словаря
+    btn_weather = types.KeyboardButton(get_text("basic_keyboard_button_1", lang))
+    btn_forecast = types.KeyboardButton(get_text("basic_keyboard_button_2", lang))
+    btn_settings = types.KeyboardButton(get_text("basic_keyboard_button_3", lang))
+    
+    keyboard.add(btn_weather, btn_forecast)
+    keyboard.add(btn_settings)
+    return keyboard
+
+def generate_help_message(user):
+    """Генерирует текст помощи"""
+    lang = get_user_lang(user)
+    header = get_text("help_header", lang)
+    cmds = get_translation_dict("help_cmds", lang)
+    footer = get_text("help_footer", lang)
+    
+    text = f"<b>{header}</b>\n\n"
+    for cmd, desc in cmds.items():
+        text += f"🔹 <b>{cmd}</b> — {desc}\n"
+    
+    return text + f"\n{footer}"
 
 """ВЫБОР ЕДИНИЦ ИЗМЕРЕНИЯ"""
-def generate_unit_selection_keyboard(current_value, unit_type):
-    unit_options = {
-        "temp": [("°C (Цельсий)", "C"), ("°F (Фаренгейт)", "F"), ("K (Кельвин)", "K"), ("Мороженки (🍦)", "ICE")],
-        "pressure": [("мм рт. ст.", "mmHg"), ("мбар", "mbar"), ("гПа", "hPa"), ("дюйм. рт. ст.", "inHg")],
-        "wind_speed": [("м/с", "m/s"), ("км/ч", "km/h"), ("миль/ч", "mph")]
-    }
-
+def generate_unit_selection_keyboard(current_value, unit_type, user_id):
+    """Создаёт клавиатуру выбора единиц измерения с учетом языка пользователя"""
+    user = get_user(user_id)
+    lang = get_user_lang(user)
+    
+    unit_names_dict = get_translation_dict("unit_selection_names", lang)
+    unit_names = unit_names_dict.get(unit_type, {})
+    
     keyboard = types.InlineKeyboardMarkup()
-    for name, value in unit_options.get(unit_type, []):
-        icon = " ✅" if current_value == value else ""
-        keyboard.add(types.InlineKeyboardButton(f"{name}{icon}", callback_data=f"set_{unit_type}_unit_{value}"))
+    for value, name in unit_names.items():
+        icon = " ✅" if str(current_value) == str(value) else ""
+        keyboard.add(types.InlineKeyboardButton(
+            text=f"{name}{icon}", 
+            callback_data=f"set_{unit_type}_unit_{value}"
+        ))
 
-    keyboard.add(types.InlineKeyboardButton("↩ Сохранить", callback_data="return_to_format_settings"))
+    keyboard.add(types.InlineKeyboardButton(
+        text=get_text("btn_save", lang), 
+        callback_data="return_to_format_settings"
+    ))
     return keyboard
 
 
 def format_weather_data(data, user):
     """
     Форматирует погодные данные с учётом единиц измерения и настроек пользователя.
-    Автоматически декодирует JSON из tracked_weather_params.
     """
-    tracked_params = decode_tracked_params(user.tracked_weather_params)
+    lang = get_user_lang(user)
+    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
+    unit_trans = get_translation_dict("unit_translations", lang)
+    labels = get_translation_dict("weather_param_labels", lang)
 
     temperature = convert_temperature(data["temp"], user.temp_unit)
     pressure = convert_pressure(data["pressure"], user.pressure_unit)
     wind_speed = convert_wind_speed(data["wind_speed"], user.wind_speed_unit)
 
-    logging.debug(f"Конвертация: {data['temp']}° -> {temperature} {user.temp_unit}")
-    logging.debug(f"Конвертация: {data['pressure']} -> {pressure} {user.pressure_unit}")
-    logging.debug(f"Конвертация: {data['wind_speed']} -> {wind_speed} {user.wind_speed_unit}")
-
-    header = f"Сейчас в г.{data['city_name']}:"
-    max_line_length = 21
-    line = "─" * min(len(header), max_line_length)
+    header_text = get_text("weather_current_header", lang).format(city=data['city_name'])
+    separator = get_text("separator", lang)
     
-    weather_text = (
-        f"<b>{header}</b>\n"
-        f"{line}\n"
-    )
+    weather_text = f"<b>{header_text}</b>\n{separator}\n"
 
-    params = {
-        "description": ("Погода", data["description"].capitalize()),
-        "temperature": ("Температура", f"{temperature:.1f}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"),
-        "feels_like": ("Ощущается как", f"{convert_temperature(data['feels_like'], user.temp_unit):.1f}{UNIT_TRANSLATIONS['temp'][user.temp_unit]}"),
-        "humidity": ("Влажность", f"{data['humidity']}%"),
-        "precipitation": ("Вероятность осадков", f"{data.get('precipitation', 0)}%"),
-        "pressure": ("Давление", f"{pressure:.1f} {UNIT_TRANSLATIONS['pressure'][user.pressure_unit]}"),
-        "wind_speed": ("Скорость ветра", f"{wind_speed:.1f} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"),
-        "wind_direction": ("Направление ветра", f"{get_wind_direction(data['wind_direction'])} ({data['wind_direction']}°)"),
-        "wind_gust": ("Порывы ветра", f"{convert_wind_speed(data['wind_gust'], user.wind_speed_unit):.1f} {UNIT_TRANSLATIONS['wind_speed'][user.wind_speed_unit]}"),
-        "clouds": ("Облачность", f"{data['clouds']}%"),
-        "visibility": ("Видимость", f"{data['visibility']} м")
+    # Подготовка значений
+    val_temp = f"{temperature:.1f}{unit_trans['temp'].get(user.temp_unit, '')}"
+    val_feels = f"{convert_temperature(data['feels_like'], user.temp_unit):.1f}{unit_trans['temp'].get(user.temp_unit, '')}"
+    val_press = f"{pressure:.1f} {unit_trans['pressure'].get(user.pressure_unit, '')}"
+    val_wind = f"{wind_speed:.1f} {unit_trans['wind_speed'].get(user.wind_speed_unit, '')}"
+    val_gust = f"{convert_wind_speed(data.get('wind_gust', 0), user.wind_speed_unit):.1f} {unit_trans['wind_speed'].get(user.wind_speed_unit, '')}"
+    
+    params_map = {
+        "description": data["description"].capitalize(),
+        "temperature": val_temp,
+        "feels_like": val_feels,
+        "humidity": f"{data['humidity']}%",
+        "precipitation": f"{data.get('precipitation', 0)}%",
+        "pressure": val_press,
+        "wind_speed": val_wind,
+        "wind_direction": f"{get_wind_direction(data['wind_direction'], lang)} ({data['wind_direction']}°)",
+        "wind_gust": val_gust,
+        "clouds": f"{data['clouds']}%",
+        "visibility": f"{data['visibility']} м"
     }
 
-    for param, (label, value) in params.items():
-        if tracked_params.get(param, False): 
+    for param, value in params_map.items():
+        if tracked_params.get(param, False):
+            label = labels.get(param, param)
             weather_text += f"▸ {label}: {value}\n"
 
-    return weather_text + "\n⛄️Одевайтесь теплее!"
+    return weather_text + f"\n{get_text('weather_footer', lang)}"
 
 
 def format_change(label, old_value, new_value, unit=""):
@@ -621,7 +627,7 @@ def convert_precipitation_to_percent(precipitation_mm):
 
 #ОБРАБОТЧИК КОМАНД
 def is_valid_command(text):
-    valid_commands = ["/start", "/weather", "/changecity", "🔅 Погода сейчас", "📅 Прогноз погоды", "⚙️ Настройки"]
+    valid_commands = ["/start", "/weather", "/changecity", "🌤 Узнать погоду", "📅 Прогноз погоды", "⚙️ Настройки"]
     return text in valid_commands
 
 
@@ -667,22 +673,30 @@ def extract_weather_data(entry):
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
 def get_today_forecast(city, user, target_date=None):
     """Прогноз погоды на определённую дату с учётом предпочтений пользователя."""
-    raw_data = fetch_today_forecast(city)
+    lang = get_user_lang(user)
+    raw_data = fetch_today_forecast(city, lang=lang)
     if not raw_data:
         return None
 
-    tz = ZoneInfo(user.timezone or "UTC")
+    lang = get_user_lang(user)
+    
+    # ИСПРАВЛЕНИЕ: Безопасное создание ZoneInfo
+    try:
+        tz = ZoneInfo(user.timezone or "UTC")
+    except Exception as e:
+        logging.warning(f"Ошибка таймзоны {user.timezone}: {e}. Используем UTC.")
+        tz = ZoneInfo("UTC")
+
     now = datetime.now(tz)
     today = target_date or now.date()
 
-    # Фильтруем только те данные, которые соответствуют нужной дате
     today_entries = [
         entry for entry in raw_data
         if datetime.fromtimestamp(entry["dt"], tz).date() == today
     ]
 
     if not today_entries:
-        logging.warning(f"⚠ Нет прогноза на дату {today} для города {city}")
+        logging.warning(get_text("warning_no_forecast", lang).format(date=today, city=city))
         return None
     
     descriptions = []
@@ -690,7 +704,6 @@ def get_today_forecast(city, user, target_date=None):
         if "weather" in entry and entry["weather"]:
             descriptions.append(entry["weather"][0]["description"])
 
-    # Берём ближайшую точку к текущему времени (или просто первую)
     today_data = min(today_entries, key=lambda entry: abs(datetime.fromtimestamp(entry["dt"], tz) - now))
 
     if "main" not in today_data or "temp" not in today_data["main"]:
@@ -698,14 +711,12 @@ def get_today_forecast(city, user, target_date=None):
         return None
 
     weather_data = extract_weather_data(today_data)
-    tracked_params = decode_tracked_params(user.tracked_weather_params)
+    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
     filtered_weather_data = {}
 
     for key, value in weather_data.items():
         if tracked_params.get(key, False) and value is not None:
             filtered_weather_data[key] = value
-        else:
-            logging.debug(f"Ключ {key} исключён из данных прогноза: {value}")
 
     temp_min = weather_data.get("temp_min", weather_data["temp"])
     temp_max = weather_data.get("temp_max", weather_data["temp"])
@@ -714,8 +725,12 @@ def get_today_forecast(city, user, target_date=None):
 
     filtered_weather_data["descriptions"] = descriptions
 
-    day_name = WEEKDAYS_RU[today.strftime("%A")]
-    date_formatted = f"{today.day} {MONTHS_RU[today.month]}"
+    months = get_translation_dict("months", lang)
+    weekdays = get_translation_dict("weekdays", lang)
+
+    day_name = weekdays.get(today.strftime("%A"), today.strftime("%A"))
+    date_formatted = f"{today.day} {months.get(today.month, '')}"
+    
     filtered_weather_data.update({
         "date": date_formatted,
         "day_name": day_name
@@ -727,18 +742,24 @@ def get_today_forecast(city, user, target_date=None):
 
 def get_tomorrow_forecast(city, user):
     """Прогноз погоды на завтра с учётом локального времени из timezone пользователя"""
-    raw_data = fetch_tomorrow_forecast(city)
+    lang = get_user_lang(user)
+    raw_data = fetch_tomorrow_forecast(city, lang=lang)
     if not raw_data or not user.timezone:
         return None
+    
     try:
         user_tz = ZoneInfo(user.timezone)
     except Exception as e:
-        logging.error(f"❌ Ошибка при загрузке таймзоны: {e}")
-        return None
+        logging.error(f"❌ Ошибка при загрузке таймзоны: {e}. Используем UTC.")
+        user_tz = ZoneInfo("UTC") # Fallback
+    
+    lang = get_user_lang(user)
     now_local = datetime.now(user_tz)
     tomorrow_date = (now_local + timedelta(days=1)).date()
+    
     tomorrow_entries = []
     descriptions = [] 
+    
     for entry in raw_data:
         entry_dt_utc = datetime.fromtimestamp(entry["dt"], tz=timezone.utc)
         entry_dt_local = entry_dt_utc.astimezone(user_tz)
@@ -746,30 +767,40 @@ def get_tomorrow_forecast(city, user):
             tomorrow_entries.append(entry)
             if "weather" in entry and entry["weather"]:
                 descriptions.append(entry["weather"][0]["description"])
+                
     if not tomorrow_entries:
         return None
-    day_name = WEEKDAYS_RU[tomorrow_date.strftime("%A")]
-    date_formatted = f"{tomorrow_date.day} {MONTHS_RU[tomorrow_date.month]}"
-    tracked_params = decode_tracked_params(user.tracked_weather_params)
+
+    # --- ИСПОЛЬЗОВАНИЕ СЛОВАРЕЙ ИЗ TEXTS ---
+    months = get_translation_dict("months", lang)
+    weekdays = get_translation_dict("weekdays", lang)
+
+    day_name = weekdays.get(tomorrow_date.strftime("%A"), tomorrow_date.strftime("%A"))
+    date_formatted = f"{tomorrow_date.day} {months.get(tomorrow_date.month, '')}"
+    
+    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
     filtered_weather_data = {}
     temp_min = float("inf")
     temp_max = float("-inf")
+    
     for entry in tomorrow_entries:
         if "main" not in entry or "temp" not in entry["main"]:
             logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
             continue
+            
         weather_data = extract_weather_data(entry)
         for key, value in weather_data.items():
             if tracked_params.get(key, False) and value is not None:
                 filtered_weather_data[key] = value
+        
         temp = weather_data.get("temp")
         if temp is not None:
             temp_min = min(temp_min, temp)
             temp_max = max(temp_max, temp)
-    if temp_min == float("inf"):
-        temp_min = None
-    if temp_max == float("-inf"):
-        temp_max = None
+            
+    if temp_min == float("inf"): temp_min = None
+    if temp_max == float("-inf"): temp_max = None
+    
     filtered_weather_data.update({
         "temp_min": temp_min,
         "temp_max": temp_max,
@@ -777,65 +808,100 @@ def get_tomorrow_forecast(city, user):
         "day_name": day_name,
         "descriptions": descriptions  
     })
+    
     return filtered_weather_data
 
 
 def get_weekly_forecast(city, user):
     """Прогноз погоды на неделю с учётом tracked_weather_params"""
-    raw_data = fetch_weekly_forecast(city)
+    lang = get_user_lang(user)
+    raw_data = fetch_weekly_forecast(city, lang=lang)
     if not raw_data:
         return None  
+        
+    lang = get_user_lang(user)
     daily_data = {}
-    today = date.today()
+    
+    # Используем таймзону пользователя для определения "сегодня", если она есть
+    try:
+        user_tz = ZoneInfo(user.timezone) if user.timezone else timezone.utc
+    except:
+        user_tz = timezone.utc
+        
+    today = datetime.now(user_tz).date()
     start_date = today + timedelta(days=1)
-    tracked_params = decode_tracked_params(user.tracked_weather_params)
+    
+    months = get_translation_dict("months", lang)
+    weekdays = get_translation_dict("weekdays", lang)
+    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
+
     for entry in raw_data:
         timestamp = entry["dt"] 
-        date_obj = datetime.fromtimestamp(timestamp).date()
-        day_name = WEEKDAYS_RU[date_obj.strftime("%A")]
+        date_obj = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(user_tz).date()
 
         if date_obj < start_date or (date_obj - start_date).days >= 5:
             continue
+            
         if "main" not in entry or "temp" not in entry["main"]:
             logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
             continue
+            
         weather_data = extract_weather_data(entry)
+        
         if date_obj not in daily_data:
+            day_name = weekdays.get(date_obj.strftime("%A"), date_obj.strftime("%A"))
             daily_data[date_obj] = {
                 "day_name": day_name,
                 "descriptions": [], 
                 **{
-                    key: value for key, value in weather_data.items() if key in tracked_params and tracked_params[key]
+                    key: value for key, value in weather_data.items() 
+                    if tracked_params.get(key, False) and value is not None
                 }
             }
-        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj].get("temp_min", float("inf")), weather_data["temp"])
-        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj].get("temp_max", float("-inf")), weather_data["temp"])
+        
+        current_temp = weather_data["temp"]
+        daily_data[date_obj]["temp_min"] = min(daily_data[date_obj].get("temp_min", float("inf")), current_temp)
+        daily_data[date_obj]["temp_max"] = max(daily_data[date_obj].get("temp_max", float("-inf")), current_temp)
+        
         if "weather" in entry and entry["weather"]:
             daily_data[date_obj]["descriptions"].append(entry["weather"][0]["description"])
+
     return [
         {
-            "date": f"{date.day} {MONTHS_RU[date.month]}",
+            "date": f"{d.day} {months.get(d.month, '')}",
             "day_name": data["day_name"],
             **data
         }
-        for date, data in sorted(daily_data.items())
+        for d, data in sorted(daily_data.items())
     ]
 
 
-def get_forecast_emoji(description):
+def get_forecast_emoji(description, lang="ru"):
+    """Возвращает эмодзи на основе описания погоды"""
     description = description.lower()
-    for key, emoji in WEATHER_EMOJI_MAP.items():
+    # Получаем карту эмодзи из словаря
+    emoji_map = get_translation_dict("weather_emoji_map", lang)
+    
+    for key, emoji in emoji_map.items():
         if key in description:
             return emoji
-    return "🌦" 
+    return "🌦"
 
 
-def get_most_severe_description(descriptions):
+def get_most_severe_description(descriptions, lang="ru"):
+    """Выбирает самое 'опасное' или значимое описание из списка"""
+    if not descriptions:
+        return ""
+        
+    severity_map = get_translation_dict("severity_map", lang)
+    
     def score(desc):
-        for key, val in SEVERITY_MAP.items():
-            if key in desc.lower():
+        desc_lower = desc.lower()
+        for key, val in severity_map.items():
+            if key in desc_lower:
                 return val
         return 0
+        
     return max(descriptions, key=score)
 
 
@@ -866,9 +932,17 @@ def group_bad_weather_periods(bad_weather_periods):
 
 def get_weather_summary_description(forecast_data, user):
     """Анализирует прогноз и выдает краткое, но честное резюме погоды."""
-    tz = ZoneInfo(user.timezone or "UTC")
+    lang = get_user_lang(user)
+    try:
+        tz = ZoneInfo(user.timezone or "UTC")
+    except Exception:
+        tz = ZoneInfo("UTC")
+
     now = datetime.now(tz)
     today = now.date()
+
+    # Загружаем список плохой погоды для сравнения
+    bad_descriptions = get_translation_dict("bad_weather_descriptions", lang)
 
     # Собираем плохую погоду с фильтром по времени
     bad_weather_periods = []
@@ -876,35 +950,43 @@ def get_weather_summary_description(forecast_data, user):
         timestamp = datetime.fromtimestamp(entry["dt"], tz)
         if timestamp.date() != today:
             continue
-        if timestamp < now - timedelta(hours=1):  # Не трогаем старьё
+        if timestamp < now - timedelta(hours=1):
             continue
 
+        # Приводим к формату для сравнения (Capitalize)
         description = entry["weather"][0]["description"].capitalize()
-        if description in BAD_WEATHER_DESCRIPTIONS:
+        
+        # Проверяем, есть ли описание в списке "плохих"
+        if description in bad_descriptions:
             bad_weather_periods.append((timestamp, description))
 
     if not bad_weather_periods:
-        return "🌤 Сегодня осадков не ожидается."
+        return get_text("weather_summary_clear", lang)
 
     # Группируем события
     groups = group_bad_weather_periods(bad_weather_periods)
 
-    # Ищем группу, которая либо актуальна прямо сейчас, либо ближайшая
+    # Ищем актуальную или ближайшую группу
     for group in groups:
-        start_time, start_desc = group[0]
-        end_time, end_desc = group[-1]
+        start_time, _ = group[0]
+        end_time, _ = group[-1]
 
         if now <= end_time:
-            main_description = get_most_severe_description([desc for _, desc in group])
-            emoji = get_forecast_emoji(main_description)
+            main_description = get_most_severe_description([desc for _, desc in group], lang)
+            emoji = get_forecast_emoji(main_description, lang)
 
-            # Если событие длится больше одного таймслота
             if start_time != end_time:
-                start_str = start_time.strftime("%H:%M")
-                end_str = end_time.strftime("%H:%M")
-                return f"{emoji} {main_description} ожидается с {start_str} до {end_str}."
+                return get_text("weather_summary_range", lang).format(
+                    emoji=emoji,
+                    desc=main_description,
+                    start=start_time.strftime("%H:%M"),
+                    end=end_time.strftime("%H:%M")
+                )
             else:
-                start_str = start_time.strftime("%H:%M")
-                return f"{emoji} {main_description} ожидается в {start_str}."
+                return get_text("weather_summary_single", lang).format(
+                    emoji=emoji,
+                    desc=main_description,
+                    time=start_time.strftime("%H:%M")
+                )
 
-    return "🌤 Сегодня осадков не ожидается."
+    return get_text("weather_summary_clear", lang)
