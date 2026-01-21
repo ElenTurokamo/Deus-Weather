@@ -463,30 +463,36 @@ def generate_weather_data_keyboard(user):
     return keyboard
     
 def generate_language_keyboard(user):
-    """Создаёт клавиатуру для выбора языка"""
-    # Текущий язык пользователя
+    """Создаёт клавиатуру для выбора языка (сетка 3x3)"""
     current_lang = get_user_lang(user)
     
-    # Словарь доступных языков: код -> название кнопки
     languages = {
         "ru": "🇷🇺 Русский",
         "en": "🇺🇸 English",
-        "kk": "🇰🇿 Қазақша"
+        "kk": "🇰🇿 Қазақша",
+        "de": "🇩🇪 Deutsch",
+        "fr": "🇫🇷 Français",
+        "it": "🇮🇹 Italiano",
+        "zh": "🇨🇳 中文",
+        "ko": "🇰🇷 한국어",
+        "ja": "🇯🇵 日本語"
     }
 
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard = types.InlineKeyboardMarkup(row_width=3)
     
     buttons = []
     for code, label in languages.items():
-        # Ставим галочку, если язык выбран
-        icon = "✅ " if code == current_lang else ""
+        if code == current_lang:
+            text = f"✅ {label}"
+        else:
+            text = label
+            
         buttons.append(
             types.InlineKeyboardButton(
-                text=f"{icon}{label}",
+                text=text,
                 callback_data=f"set_lang_{code}"
             )
         )
-    
     keyboard.add(*buttons)
     
     back_text = get_text("btn_back", current_lang)
