@@ -11,6 +11,7 @@ COPY logic.py /app/logic.py
 COPY models.py /app/models.py
 COPY weather.py /app/weather.py
 COPY weather_timer.py /app/weather_timer.py
+COPY texts.py /app/texts.py
 
 COPY start.bat /app/start.bat
 COPY bot.bat /app/bot.bat
