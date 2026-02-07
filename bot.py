@@ -2,11 +2,15 @@
 from telebot import types
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
-from logic import get_user, save_user, update_user 
+from logic import get_user, save_user, update_user, format_forecast
 from logic import *
 from logic import (
+    get_user, save_user, update_user, format_forecast, 
+    get_weekly_forecast_data, get_weather_summary_description,
+    get_today_forecast, get_tomorrow_forecast,
     decode_tracked_params, convert_temperature, convert_pressure, 
-    convert_wind_speed, get_wind_direction, get_text, get_translation_dict
+    convert_wind_speed, get_wind_direction, get_text, get_translation_dict,
+    get_user_lang
 )
 from weather import get_weather, resolve_city_from_coords
 from datetime import datetime, timezone
@@ -202,145 +206,88 @@ def forecast_handler(call):
 
     lang = get_user_lang(user)  
 
-    if call.data == "forecast_today":
-        forecast_data = [get_today_forecast(user.preferred_city, user)]
-    elif call.data == "forecast_tomorrow":
-        forecast_data = [get_tomorrow_forecast(user.preferred_city, user)]
-    else:
-        forecast_data = get_weekly_forecast(user.preferred_city, user)
+    # 1. Получение данных и определение заголовков/описаний
+    # Мы сразу определяем, какой заголовок и какую функцию для raw-данных использовать
+    forecast_data = []
+    title_text = ""
+    summary_raw_data = None # Данные для текстового описания (дождь в 14:00 и т.д.)
 
+    if call.data == "forecast_today":
+        # Данные
+        day_data = get_today_forecast(user.preferred_city, user)
+        if day_data: forecast_data = [day_data]
+        
+        # Тексты
+        title_text = get_text("daily_forecast_title", lang)
+        summary_raw_data = fetch_today_forecast(user.preferred_city, lang=lang)
+
+    elif call.data == "forecast_tomorrow":
+        # Данные
+        day_data = get_tomorrow_forecast(user.preferred_city, user) # Убедись, что эта функция импортирована
+        if day_data: forecast_data = [day_data]
+        
+        # Тексты
+        title_text = get_text("tomorrow_forecast_title", lang) or "Прогноз на завтра"
+        summary_raw_data = fetch_tomorrow_forecast(user.preferred_city, lang=lang)
+
+    else: # forecast_week
+        # Данные
+        forecast_data = get_weekly_forecast_data(user.preferred_city, user) # Используем get_weekly_forecast_data из logic
+        
+        # Тексты
+        title_text = get_text("weekly_forecast_title", lang) or "Прогноз на неделю"
+        summary_raw_data = None # Для недели детальное описание по часам не генерируем, чтобы не спамить
+
+    # 2. Проверка на пустоту
     if not forecast_data or any(d is None for d in forecast_data):
         bot.send_message(chat_id, "⚠ Не удалось получить прогноз погоды.")
         return
 
+    # 3. Генерация текста сообщения
     try:
-        forecast_text = (
-            "\n\n".join([format_forecast(day, user) for day in forecast_data])
-            + "\n\n"
-            + get_text("forecast_footer", lang)
-        )
+        formatted_pages = []
+        
+        for day in forecast_data:
+            # Если есть сырые данные для саммари (только для сегодня/завтра), генерируем текст
+            current_summary = None
+            if summary_raw_data:
+                current_summary = get_weather_summary_description(summary_raw_data, user)
+            
+            # Вызываем НОВУЮ функцию форматирования
+            # Она сама добавит заголовок, разделители и спойлеры
+            text = format_forecast(day, user, title_text, summary_text=current_summary)
+            formatted_pages.append(text)
+
+        # Склеиваем всё через двойной отступ
+        forecast_text = "\n\n".join(formatted_pages)
+    
     except KeyError as e:
         bot_logger.error(f"Ключ отсутствует в данных прогноза: {e}")
         bot.send_message(chat_id, "⚠ Произошла ошибка при обработке прогноза.")
         send_main_menu(chat_id)
         return
 
+    # 4. Отправка / Редактирование (как в старом коде)
     try:
         bot.edit_message_text(
             forecast_text,
             chat_id,
             menu_message_id,
             parse_mode="HTML",
-            reply_markup=None
+            reply_markup=None # Или вернуть клавиатуру, если нужно
         )
         update_data_field("last_bot_message", chat_id, None)
     except Exception as e:
         bot_logger.warning(f"⚠ Не удалось отредактировать сообщение: {str(e)}")
+        # Если не удалось отредактировать (например, слишком старое), шлем новое
         msg = bot.send_message(chat_id, forecast_text, parse_mode="HTML")
         update_data_field("last_bot_message", chat_id, msg.message_id)
 
-    bot_logger.info(f"✅ Прогноз погоды отправлен в чат {chat_id}.")
+    bot_logger.info(f"✅ Прогноз погоды ({call.data}) отправлен в чат {chat_id}.")
+    
+    # Переотправляем меню, чтобы оно было внизу
     send_main_menu(chat_id)
 
-
-def format_forecast(day, user):
-    """
-    Полностью рабочая версия форматирования прогноза.
-    Исправлено: получение единиц измерения, вложенность словарей и локализация меток.
-    """
-    lang = get_user_lang(user)
-    # Декодируем параметры, которые пользователь хочет видеть
-    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
-    
-    # Получаем словари переводов
-    unit_trans = get_translation_dict("unit_translations", lang)
-    labels = get_translation_dict("weather_param_labels", lang)
-    
-    # Шапка прогноза
-    parts = [
-        get_text("forecast_header", lang).format(day_name=day['day_name'], date=day['date']),
-        get_text("separator", lang)
-    ]
-
-    # 1. Описание (Weather/Погода)
-    if tracked_params.get("description", False):
-        desc = ""
-        if isinstance(day.get("descriptions"), list) and day["descriptions"]:
-            # Берем самое частое описание за день
-            desc = Counter(day["descriptions"]).most_common(1)[0][0].capitalize()
-        elif "description" in day:
-            desc = day['description'].capitalize()
-        
-        if desc:
-            label = labels.get("description", "Weather")
-            parts.append(f"▸ {label}: {desc}")
-
-    # 2. Температура (Temperature)
-    if tracked_params.get("temperature", False) and "temp_min" in day:
-        t_min = round(convert_temperature(day['temp_min'], user.temp_unit))
-        t_max = round(convert_temperature(day['temp_max'], user.temp_unit))
-        unit = unit_trans.get("temp", {}).get(user.temp_unit, "°C")
-        label = labels.get("temperature", "Temp")
-        
-        if t_min == t_max:
-            parts.append(f"▸ {label}: {t_min}{unit}")
-        else:
-            parts.append(f"▸ {label}: {t_min}{unit} to {t_max}{unit}")
-
-    # 3. Ощущается как (Feels like)
-    if tracked_params.get("feels_like", False) and "feels_like" in day:
-        val = round(convert_temperature(day['feels_like'], user.temp_unit))
-        unit = unit_trans.get("temp", {}).get(user.temp_unit, "°C")
-        label = labels.get("feels_like", "Feels like")
-        parts.append(f"▸ {label}: {val}{unit}")
-
-    # 4. Влажность (Humidity)
-    if tracked_params.get("humidity", False) and "humidity" in day:
-        label = labels.get("humidity", "Humidity")
-        parts.append(f"▸ {label}: {day['humidity']}%")
-    
-    # 5. Осадки (Precipitation)
-    if tracked_params.get("precipitation", False) and "precipitation" in day:
-        label = labels.get("precipitation", "Precipitation")
-        parts.append(f"▸ {label}: {day['precipitation']}%")
-
-    # 6. Давление (Pressure) - Исправлено получение юнитов
-    if tracked_params.get("pressure", False) and "pressure" in day:
-        val = round(convert_pressure(day['pressure'], user.pressure_unit))
-        unit = unit_trans.get("pressure", {}).get(user.pressure_unit, "mmHg")
-        label = labels.get("pressure", "Pressure")
-        parts.append(f"▸ {label}: {val} {unit}")
-
-    # 7. Ветер (Wind Speed) - Исправлено получение юнитов
-    wind_unit = unit_trans.get("wind_speed", {}).get(user.wind_speed_unit, "m/s")
-    if tracked_params.get("wind_speed", False) and "wind_speed" in day:
-        val = round(convert_wind_speed(day['wind_speed'], user.wind_speed_unit), 1)
-        label = labels.get("wind_speed", "Wind")
-        parts.append(f"▸ {label}: {val} {wind_unit}")
-
-    # 8. Направление ветра (Wind Direction)
-    if tracked_params.get("wind_direction", False) and "wind_direction" in day:
-        direction = get_wind_direction(day['wind_direction'], lang)
-        label = labels.get("wind_direction", "Wind Dir")
-        parts.append(f"▸ {label}: {direction} ({day['wind_direction']}°)")
-
-    # 9. Порывы ветра (Wind Gust)
-    if tracked_params.get("wind_gust", False) and "wind_gust" in day:
-        val = round(convert_wind_speed(day['wind_gust'], user.wind_speed_unit), 1)
-        label = labels.get("wind_gust", "Wind Gust")
-        parts.append(f"▸ {label}: {val} {wind_unit}")
-
-    # 10. Облачность (Clouds)
-    if tracked_params.get("clouds", False) and "clouds" in day:
-        label = labels.get("clouds", "Clouds")
-        parts.append(f"▸ {label}: {day['clouds']}%")
-
-    # 11. Видимость (Visibility)
-    if tracked_params.get("visibility", False) and "visibility" in day:
-        label = labels.get("visibility", "Visibility")
-        parts.append(f"▸ {label}: {int(day['visibility'])} m")
-
-    return "\n".join(parts)
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_settings")
@@ -442,40 +389,47 @@ def ask_for_city_initial(chat_id, user_id, lang, user_name):
     bot.register_next_step_handler(msg, process_new_city_registration)
 
 
-@safe_execute
 @bot.message_handler(commands=['weather'])
-def weather(message):
-    """Отправка текущей погоды в городе пользователя"""
-    user_id = message.from_user.id
-    user = get_user(user_id)
-    lang = get_user_lang(user)
+def handle_weather_command(message):
+    """
+    Текущая погода. Отвечает реплаем на команду + переотправляет меню.
+    """
+    chat_id = message.chat.id
+    # Используем from_user.id для получения настроек
+    user = get_user(message.from_user.id)
     
-    bot_logger.info(f"▸ Получена команда /weather от {user_id}.")
-    
+    # Если юзер не найден или город не задан
     if not user or not user.preferred_city:
-        bot_logger.info(f"▸ У пользователя {user_id} не выбран город. Запрашиваем ввод.")
-        text = get_text("error_no_city", lang)
-        reply = bot.reply_to(message, text)
-        bot.register_next_step_handler(reply, process_new_city)
+        lang = get_user_lang(user) if user else 'ru'
+        bot.reply_to(message, get_text("city_not_set", lang))
         return
 
-    delete_last_menu_message(message.chat.id)
-    
+    # Получаем данные
+    lang = get_user_lang(user)
     weather_data = get_weather(user.preferred_city, lang=lang)
     
-    if not weather_data:
-        bot_logger.error(f"▸ Ошибка получения погоды для {user.preferred_city}")
-        text = get_text("error_weather_fetch", lang)
-        bot.reply_to(message, text)
-        send_main_menu(message.chat.id)
-        return
+    if weather_data:
+        title = get_text("current_weather_title", lang) or "Текущая погода"
+        
+        msg = format_forecast(weather_data, user, title, summary_text=None)
+        
+        # 1. Удаляем старое меню (чтобы оно не висело выше)
+        last_menu_id = get_data_field("last_menu_message", chat_id)
+        if last_menu_id:
+            try:
+                bot.delete_message(chat_id, last_menu_id)
+            except Exception:
+                pass # Игнорируем, если сообщение уже удалено или слишком старое
+            update_data_field("last_menu_message", chat_id, None)
 
-    bot_logger.info(f"▸ Погода в {user.preferred_city} успешно получена.")
-    
-    weather_info = format_weather_data(weather_data, user)
-    
-    bot.reply_to(message, weather_info, parse_mode="HTML")
-    send_main_menu(message.chat.id)
+        # 2. Отвечаем на команду
+        bot.reply_to(message, msg, parse_mode="HTML")
+
+        # 3. Отправляем меню заново вниз
+        send_main_menu(chat_id)
+        
+    else:
+        bot.reply_to(message, get_text("error_getting_weather", lang))
 
 
 @safe_execute
@@ -1061,7 +1015,7 @@ def toggle_weather_param(call):
 
 def get_menu_actions(lang="lang"):
     return {
-        get_text("menu_weather_now", lang): weather,
+        get_text("menu_weather_now", lang): handle_weather_command,
         get_text("menu_forecast", lang): forecast_menu_handler,
         get_text("menu_settings", lang): lambda msg: send_settings_menu(msg.chat.id),
         get_text("menu_change_city", lang): changecity,
@@ -1455,6 +1409,7 @@ def clear_old_updates():
     if updates:
         last_update_id = updates[-1].update_id
         bot_logger.info(f"Сброшены старые обновления до [offset {last_update_id + 1}]")
+        
 
 
 if __name__ == '__main__':

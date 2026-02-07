@@ -3,9 +3,14 @@ from timezonefinder import TimezoneFinder
 from datetime import datetime, timedelta
 import requests
 import os
+import re
 from texts import get_api_lang_code
 
 load_dotenv()
+
+def is_latin(text):
+    """Проверяет, состоит ли текст только из латиницы."""
+    return bool(re.match(r'^[a-zA-Z\s\-]+$', text))
 
 def get_weather(city, lang="ru"):
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
@@ -18,8 +23,19 @@ def get_weather(city, lang="ru"):
     if response_data.get("cod") != 200:
         return None
 
+    # ИСПРАВЛЕНИЕ: Название города
+    city_name = response_data["name"]
+    lat = response_data["coord"]["lat"]
+    lon = response_data["coord"]["lon"]
+
+    # Если мы просим 'ru', а нам вернули латиницу (Almaty), пробуем получить локальное имя.
+    if api_lang == "ru" and is_latin(city_name):
+        localized_name = resolve_city_from_coords(lat, lon, lang)
+        if localized_name:
+            city_name = localized_name
+
     return {
-        "city_name": response_data["name"],
+        "city_name": city_name, 
         "temp": response_data["main"]["temp"],
         "feels_like": response_data["main"]["feels_like"],
         "description": response_data["weather"][0]["description"],
@@ -31,8 +47,8 @@ def get_weather(city, lang="ru"):
         "pressure": round(response_data["main"]["pressure"]),
         "visibility": response_data.get("visibility", 0),
         "coordinates": {
-            "lat": response_data["coord"]["lat"],
-            "lon": response_data["coord"]["lon"]
+            "lat": lat,
+            "lon": lon
         }  
     }
 
@@ -50,6 +66,7 @@ def fetch_weekly_forecast(city, lang="ru"):
     return response_data["list"]
 
 def resolve_city_from_coords(lat, lon, lang="ru"):
+    """Получает точное локализованное название города по координатам."""
     try:
         WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
         api_lang = get_api_lang_code(lang)
@@ -58,13 +75,18 @@ def resolve_city_from_coords(lat, lon, lang="ru"):
             "lat": lat,
             "lon": lon,
             "limit": 1,
-            "appid": WEATHER_API_KEY,
-            "lang": api_lang
+            "appid": WEATHER_API_KEY
         }
         response = requests.get(url, params=params)
         data = response.json()
+        
         if response.status_code == 200 and data:
-            return data[0].get("name")
+            location = data[0]
+            # Пытаемся найти имя в local_names для нужного языка
+            if "local_names" in location and api_lang in location["local_names"]:
+                return location["local_names"][api_lang]
+            return location.get("name")
+            
         return None
     except Exception:
         return None

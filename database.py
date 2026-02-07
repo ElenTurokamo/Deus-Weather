@@ -1,3 +1,5 @@
+# СКРИПТ ДЛЯ СОЗДАНИЯ БАЗЫ ДАННЫХ
+
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -18,8 +20,8 @@ DATABASE_URL = (
 
 engine = create_engine(
     DATABASE_URL,
-    echo=True,           # лог SQL, потом можно выключить
-    pool_pre_ping=True   # защита от отвалов соединения
+    echo=True,        
+    pool_pre_ping=True  
 )
 
 SessionLocal = sessionmaker(

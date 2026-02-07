@@ -8,6 +8,8 @@ from models import User, LocalVars
 from datetime import date, timedelta, datetime, timezone
 from zoneinfo import ZoneInfo
 from texts import TEXTS, get_api_lang_code 
+from collections import Counter
+from datetime import datetime
 
 import os
 import logging
@@ -677,146 +679,106 @@ def extract_weather_data(entry):
 
 
 #ПОЛУЧЕНИЕ ПРОГНОЗА ПОГОДЫ
-def get_today_forecast(city, user, target_date=None):
-    """Прогноз погоды на определённую дату с учётом предпочтений пользователя."""
+def get_today_forecast(city, user):
+    """
+    Получает прогноз на СЕГОДНЯ, агрегируя 3-часовые интервалы.
+    """
     lang = get_user_lang(user)
-    raw_data = fetch_today_forecast(city, lang=lang)
-    if not raw_data:
+    raw_data = fetch_today_forecast(city, lang)
+    if not raw_data: 
         return None
-
-    lang = get_user_lang(user)
-    
-    # ИСПРАВЛЕНИЕ: Безопасное создание ZoneInfo
-    try:
-        tz = ZoneInfo(user.timezone or "UTC")
-    except Exception as e:
-        logging.warning(f"Ошибка таймзоны {user.timezone}: {e}. Используем UTC.")
-        tz = ZoneInfo("UTC")
-
+        
+    tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
     now = datetime.now(tz)
-    today = target_date or now.date()
-
-    today_entries = [
-        entry for entry in raw_data
-        if datetime.fromtimestamp(entry["dt"], tz).date() == today
-    ]
-
-    if not today_entries:
-        logging.warning(get_text("warning_no_forecast", lang).format(date=today, city=city))
-        return None
+    today_str = now.strftime("%Y-%m-%d")
     
-    descriptions = []
-    for entry in today_entries:
-        if "weather" in entry and entry["weather"]:
-            descriptions.append(entry["weather"][0]["description"])
-
-    today_data = min(today_entries, key=lambda entry: abs(datetime.fromtimestamp(entry["dt"], tz) - now))
-
-    if "main" not in today_data or "temp" not in today_data["main"]:
-        logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {today_data}")
+    # Фильтруем данные только за сегодня (по времени пользователя)
+    today_items = []
+    for item in raw_data:
+        # OpenWeatherMap дает dt (timestamp в UTC). Конвертируем в время юзера
+        dt_obj = datetime.fromtimestamp(item['dt'], tz)
+        if dt_obj.strftime("%Y-%m-%d") == today_str:
+            today_items.append(item)
+            
+    if not today_items:
         return None
-
-    weather_data = extract_weather_data(today_data)
-    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
-    filtered_weather_data = {}
-
-    for key, value in weather_data.items():
-        if tracked_params.get(key, False) and value is not None:
-            filtered_weather_data[key] = value
-
-    temp_min = weather_data.get("temp_min", weather_data["temp"])
-    temp_max = weather_data.get("temp_max", weather_data["temp"])
-    filtered_weather_data["temp_min"] = min(filtered_weather_data.get("temp_min", float("inf")), temp_min)
-    filtered_weather_data["temp_max"] = max(filtered_weather_data.get("temp_max", float("-inf")), temp_max)
-
-    filtered_weather_data["descriptions"] = descriptions
-
-    months = get_translation_dict("months", lang)
-    weekdays = get_translation_dict("weekdays", lang)
-
-    day_name = weekdays.get(today.strftime("%A"), today.strftime("%A"))
-    date_formatted = f"{today.day} {months.get(today.month, '')}"
+        
+    # Агрегация данных
+    temps = [item['main']['temp'] for item in today_items]
+    feels_like = [item['main']['feels_like'] for item in today_items]
+    humidities = [item['main']['humidity'] for item in today_items]
+    wind_speeds = [item['wind']['speed'] for item in today_items]
+    # pop = probability of precipitation (0..1)
+    pop = [item.get('pop', 0) for item in today_items]
     
-    filtered_weather_data.update({
-        "date": date_formatted,
-        "day_name": day_name
-    })
-
-    return filtered_weather_data
-
-
+    # Собираем все описания погоды
+    descriptions = [d['weather'][0]['description'] for d in today_items]
+    
+    return {
+        'date': now.strftime("%d.%m"), # Формат строго DD.MM для format_forecast
+        'temp_min': min(temps),
+        'temp_max': max(temps),
+        'temp': sum(temps) / len(temps),
+        'feels_like': sum(feels_like) / len(feels_like),
+        'humidity': sum(humidities) / len(humidities),
+        'wind_speed': max(wind_speeds),
+        'precipitation': int(max(pop) * 100),
+        'descriptions': descriptions,
+        'pressure': today_items[0]['main']['pressure'], # Берем первое доступное
+        'clouds': today_items[0]['clouds']['all'],
+        'visibility': today_items[0].get('visibility', 10000),
+        'wind_direction': today_items[0]['wind'].get('deg', 0),
+        'wind_gust': max([item['wind'].get('gust', 0) for item in today_items])
+    }
 
 def get_tomorrow_forecast(city, user):
-    """Прогноз погоды на завтра с учётом локального времени из timezone пользователя"""
+    """
+    Получает прогноз на ЗАВТРА, агрегируя 3-часовые интервалы.
+    """
     lang = get_user_lang(user)
-    raw_data = fetch_tomorrow_forecast(city, lang=lang)
-    if not raw_data or not user.timezone:
-        return None
-    
-    try:
-        user_tz = ZoneInfo(user.timezone)
-    except Exception as e:
-        logging.error(f"❌ Ошибка при загрузке таймзоны: {e}. Используем UTC.")
-        user_tz = ZoneInfo("UTC") # Fallback
-    
-    lang = get_user_lang(user)
-    now_local = datetime.now(user_tz)
-    tomorrow_date = (now_local + timedelta(days=1)).date()
-    
-    tomorrow_entries = []
-    descriptions = [] 
-    
-    for entry in raw_data:
-        entry_dt_utc = datetime.fromtimestamp(entry["dt"], tz=timezone.utc)
-        entry_dt_local = entry_dt_utc.astimezone(user_tz)
-        if entry_dt_local.date() == tomorrow_date:
-            tomorrow_entries.append(entry)
-            if "weather" in entry and entry["weather"]:
-                descriptions.append(entry["weather"][0]["description"])
-                
-    if not tomorrow_entries:
+    raw_data = fetch_tomorrow_forecast(city, lang) # Обычно это тот же эндпоинт, что и today
+    if not raw_data: 
         return None
 
-    # --- ИСПОЛЬЗОВАНИЕ СЛОВАРЕЙ ИЗ TEXTS ---
-    months = get_translation_dict("months", lang)
-    weekdays = get_translation_dict("weekdays", lang)
+    tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
+    now = datetime.now(tz)
+    tomorrow = now + timedelta(days=1)
+    tomorrow_str = tomorrow.strftime("%Y-%m-%d")
 
-    day_name = weekdays.get(tomorrow_date.strftime("%A"), tomorrow_date.strftime("%A"))
-    date_formatted = f"{tomorrow_date.day} {months.get(tomorrow_date.month, '')}"
-    
-    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
-    filtered_weather_data = {}
-    temp_min = float("inf")
-    temp_max = float("-inf")
-    
-    for entry in tomorrow_entries:
-        if "main" not in entry or "temp" not in entry["main"]:
-            logging.error(f"❌ Ошибка: в данных нет 'main' или 'temp'! {entry}")
-            continue
-            
-        weather_data = extract_weather_data(entry)
-        for key, value in weather_data.items():
-            if tracked_params.get(key, False) and value is not None:
-                filtered_weather_data[key] = value
-        
-        temp = weather_data.get("temp")
-        if temp is not None:
-            temp_min = min(temp_min, temp)
-            temp_max = max(temp_max, temp)
-            
-    if temp_min == float("inf"): temp_min = None
-    if temp_max == float("-inf"): temp_max = None
-    
-    filtered_weather_data.update({
-        "temp_min": temp_min,
-        "temp_max": temp_max,
-        "date": date_formatted,
-        "day_name": day_name,
-        "descriptions": descriptions  
-    })
-    
-    return filtered_weather_data
+    # Фильтруем данные только за завтра
+    tomorrow_items = []
+    for item in raw_data:
+        dt_obj = datetime.fromtimestamp(item['dt'], tz)
+        if dt_obj.strftime("%Y-%m-%d") == tomorrow_str:
+            tomorrow_items.append(item)
 
+    if not tomorrow_items:
+        return None
+
+    # Агрегация данных
+    temps = [item['main']['temp'] for item in tomorrow_items]
+    feels_like = [item['main']['feels_like'] for item in tomorrow_items]
+    humidities = [item['main']['humidity'] for item in tomorrow_items]
+    wind_speeds = [item['wind']['speed'] for item in tomorrow_items]
+    pop = [item.get('pop', 0) for item in tomorrow_items]
+    descriptions = [d['weather'][0]['description'] for d in tomorrow_items]
+
+    return {
+        'date': tomorrow.strftime("%d.%m"), # ВАЖНО: Формат DD.MM
+        'temp_min': min(temps),
+        'temp_max': max(temps),
+        'temp': sum(temps) / len(temps),
+        'feels_like': sum(feels_like) / len(feels_like),
+        'humidity': sum(humidities) / len(humidities),
+        'wind_speed': max(wind_speeds),
+        'precipitation': int(max(pop) * 100),
+        'descriptions': descriptions,
+        'pressure': tomorrow_items[0]['main']['pressure'],
+        'clouds': tomorrow_items[0]['clouds']['all'],
+        'visibility': tomorrow_items[0].get('visibility', 10000),
+        'wind_direction': tomorrow_items[0]['wind'].get('deg', 0),
+        'wind_gust': max([item['wind'].get('gust', 0) for item in tomorrow_items])
+    }
 
 def get_weekly_forecast(city, user):
     """Прогноз погоды на неделю с учётом tracked_weather_params"""
@@ -996,3 +958,241 @@ def get_weather_summary_description(forecast_data, user):
                 )
 
     return get_text("weather_summary_clear", lang)
+
+def format_forecast(weather_data, user, title_text, summary_text=None):
+    """
+    Универсальная функция форматирования.
+    Дата теперь берется из словаря переводов (texts.py).
+    """
+    lang = get_user_lang(user)
+    tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
+    
+    unit_trans = get_translation_dict("unit_translations", lang)
+    labels = get_translation_dict("weather_data_labels", lang) 
+
+    
+    # --- 2. ДАТА И ОПИСАНИЕ (Динамический перевод) ---
+    tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
+
+    # Восстанавливаем объект времени (datetime)
+    if 'dt' in weather_data:
+        dt_obj = datetime.fromtimestamp(weather_data['dt'], tz)
+        show_time = True
+    elif 'date' in weather_data and len(weather_data['date']) == 5:
+        # Пытаемся распарсить формат "ДД.ММ" из прогноза
+        try:
+            d, m = map(int, weather_data['date'].split('.'))
+            now = datetime.now(tz)
+            dt_obj = now.replace(month=m, day=d)
+            show_time = False 
+        except:
+            dt_obj = datetime.now(tz)
+            show_time = True
+    else:
+        dt_obj = datetime.now(tz)
+        show_time = True
+
+    # Получаем словари перевода из texts.py
+    # Ожидается, что в texts.py есть ключи "months" (1..12) и "weekdays" (Monday..Sunday)
+    months_map = get_translation_dict("months", lang)
+    weekdays_map = get_translation_dict("weekdays", lang)
+    
+    # Стандартные ключи для дней недели (Python weekday() -> 0..6)
+    en_weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    wd_key = en_weekdays[dt_obj.weekday()]
+    
+    # Достаем перевод
+    wd_str = weekdays_map.get(wd_key, wd_key)  # Например "Суббота"
+    # Месяц (ключ - int)
+    month_str = months_map.get(dt_obj.month, dt_obj.strftime("%B")) # Например "февраля"
+    
+    day_num = dt_obj.day
+    time_str = dt_obj.strftime("%H:%M")
+
+    # Сборка строки даты: "Суббота, 7 февраля 11:31"
+    if show_time:
+        date_line = f"<b>{wd_str}, {day_num} {month_str} {time_str}</b>"
+    else:
+        date_line = f"<b>{wd_str}, {day_num} {month_str}</b>"
+
+    # Описание погоды
+    desc = ""
+    if "descriptions" in weather_data and isinstance(weather_data["descriptions"], list):
+        if weather_data["descriptions"]:
+            desc = Counter(weather_data["descriptions"]).most_common(1)[0][0].capitalize()
+    elif "description" in weather_data:
+        desc = str(weather_data['description']).capitalize()
+    
+    if desc:
+        date_line += f"\n▸ {desc}"
+    
+    info_text = date_line
+    
+    # --- 3. МЕТЕОДАННЫЕ (Metrics) ---
+    metrics_lines = []
+    
+    # Температура
+    if tracked_params.get("temperature", False):
+        unit = unit_trans.get("temp", {}).get(user.temp_unit, "°C")
+        label = labels.get("temperature", "Температура")
+        
+        val_str = ""
+        if "temp_min" in weather_data and "temp_max" in weather_data:
+            t_min = round(convert_temperature(weather_data['temp_min'], user.temp_unit))
+            t_max = round(convert_temperature(weather_data['temp_max'], user.temp_unit))
+            if t_min == t_max:
+                val_str = f"{t_min}{unit}"
+            else:
+                val_str = f"{t_min}{unit} ~ {t_max}{unit}"
+        elif "temp" in weather_data:
+            val = round(convert_temperature(weather_data['temp'], user.temp_unit))
+            val_str = f"{val}{unit}"
+            
+        if val_str:
+            metrics_lines.append(f"▸ {label}: {val_str}")
+
+    # Ощущается как
+    if tracked_params.get("feels_like", False) and "feels_like" in weather_data:
+        val = round(convert_temperature(weather_data['feels_like'], user.temp_unit))
+        unit = unit_trans.get("temp", {}).get(user.temp_unit, "°C")
+        label = labels.get("feels_like", "Ощущается")
+        metrics_lines.append(f"▸ {label}: {val}{unit}")
+
+    # Влажность
+    if tracked_params.get("humidity", False) and "humidity" in weather_data:
+        label = labels.get("humidity", "Влажность")
+        metrics_lines.append(f"▸ {label}: {int(weather_data['humidity'])}%")
+
+    # Осадки
+    if tracked_params.get("precipitation", False) and "precipitation" in weather_data:
+        label = labels.get("precipitation", "Осадки")
+        val = weather_data['precipitation']
+        metrics_lines.append(f"▸ {label}: {val}%")
+
+    # Давление
+    if tracked_params.get("pressure", False) and "pressure" in weather_data:
+        val = round(convert_pressure(weather_data['pressure'], user.pressure_unit))
+        unit = unit_trans.get("pressure", {}).get(user.pressure_unit, "mmHg")
+        label = labels.get("pressure", "Давление")
+        metrics_lines.append(f"▸ {label}: {val} {unit}")
+
+    # Ветер
+    wind_unit = unit_trans.get("wind_speed", {}).get(user.wind_speed_unit, "m/s")
+    if tracked_params.get("wind_speed", False) and "wind_speed" in weather_data:
+        val = round(convert_wind_speed(weather_data['wind_speed'], user.wind_speed_unit), 1)
+        label = labels.get("wind_speed", "Ветер")
+        metrics_lines.append(f"▸ {label}: {val} {wind_unit}")
+
+    # Порывы
+    if tracked_params.get("wind_gust", False) and "wind_gust" in weather_data:
+        val = round(convert_wind_speed(weather_data['wind_gust'], user.wind_speed_unit), 1)
+        label = labels.get("wind_gust", "Порывы")
+        metrics_lines.append(f"▸ {label}: {val} {wind_unit}")
+        
+    # Направление ветра
+    if tracked_params.get("wind_direction", False) and "wind_direction" in weather_data:
+         label = labels.get("wind_direction", "Направление")
+         metrics_lines.append(f"▸ {label}: {weather_data['wind_direction']}°")
+
+    # Облачность
+    if tracked_params.get("clouds", False) and "clouds" in weather_data:
+        label = labels.get("clouds", "Облачность")
+        metrics_lines.append(f"▸ {label}: {int(weather_data['clouds'])}%")
+        
+    # Видимость
+    if tracked_params.get("visibility", False) and "visibility" in weather_data:
+        label = labels.get("visibility", "Видимость")
+        metrics_lines.append(f"▸ {label}: {int(weather_data['visibility'])} м")
+
+    metrics_text = "\n".join(metrics_lines)
+
+    # --- СБОРКА ИТОГОВОГО СООБЩЕНИЯ ---
+    final_message = f"{info_text}"
+    
+    if metrics_text:
+        final_message += f"\n─────────────────────\n<blockquote expandable>{metrics_text}</blockquote>"
+
+    if summary_text:
+        final_message += f"\n\n{summary_text}"
+        
+    return final_message
+
+def get_weekly_forecast_data(city, user):
+    """
+    Преобразует 3-часовой прогноз (список) в список сводок по дням.
+    Аналог get_today_forecast, но для всех дней сразу.
+    """
+    lang = get_user_lang(user)
+    # Используем ту же функцию получения сырых данных
+    raw_data = fetch_today_forecast(city, lang) 
+    
+    if not raw_data:
+        return []
+
+    # Словарь для группировки: "2023-10-25" -> [данные, данные...]
+    daily_groups = {}
+    
+    # Получаем таймзону пользователя, если есть, иначе UTC
+    tz = ZoneInfo(user.timezone) if user.timezone else timezone.utc
+    
+    for item in raw_data:
+        # Преобразуем timestamp в дату с учетом часового пояса
+        dt = datetime.fromtimestamp(item['dt'], tz)
+        date_key = dt.strftime('%Y-%m-%d')
+        
+        if date_key not in daily_groups:
+            daily_groups[date_key] = {
+                'temps': [],
+                'feels_like': [],
+                'descriptions': [],
+                'wind_speeds': [],
+                'humidities': [],
+                'pop': [], # Вероятность осадков
+                'dt_obj': dt
+            }
+        
+        daily_groups[date_key]['temps'].append(item['main']['temp'])
+        daily_groups[date_key]['feels_like'].append(item['main']['feels_like'])
+        daily_groups[date_key]['humidities'].append(item['main']['humidity'])
+        daily_groups[date_key]['wind_speeds'].append(item['wind']['speed'])
+        daily_groups[date_key]['pop'].append(item.get('pop', 0))
+        
+        if 'weather' in item and item['weather']:
+            daily_groups[date_key]['descriptions'].append(item['weather'][0]['description'])
+
+    final_forecast = []
+    sorted_days = sorted(daily_groups.keys())
+    
+    for day in sorted_days:
+        data = daily_groups[day]
+        dt = data['dt_obj']
+        
+        # Определение дня недели
+        weekdays_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        weekdays_en = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        wd_idx = dt.weekday()
+        day_name = weekdays_ru[wd_idx] if lang == 'ru' else weekdays_en[wd_idx]
+
+        # Агрегация (как в твоем get_today_forecast)
+        day_info = {
+            'date': dt.strftime("%d.%m"),
+            'day_name': day_name,
+            'temp_min': min(data['temps']),
+            'temp_max': max(data['temps']),
+            'temp': sum(data['temps']) / len(data['temps']), # Средняя для совместимости
+            'feels_like': sum(data['feels_like']) / len(data['feels_like']),
+            'humidity': sum(data['humidities']) / len(data['humidities']),
+            'wind_speed': max(data['wind_speeds']), # Берем худший ветер
+            'precipitation': int(max(data['pop']) * 100),
+            'descriptions': data['descriptions'], # Передаем список, format_forecast сам выберет частое
+            
+            # Заглушки, чтобы не ломался format_forecast
+            'pressure': 1013, 
+            'wind_gust': 0,
+            'wind_direction': 0,
+            'clouds': 0,
+            'visibility': 10000 
+        }
+        final_forecast.append(day_info)
+        
+    return final_forecast
