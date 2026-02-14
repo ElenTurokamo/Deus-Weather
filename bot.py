@@ -1,30 +1,47 @@
-#ИМПОРТЫ
-from telebot import types
-from dotenv import load_dotenv
-from logging.handlers import RotatingFileHandler
-from logic import get_user, save_user, update_user, format_forecast
-from logic import *
-from logic import (
-    get_user, save_user, update_user, format_forecast, 
-    get_weekly_forecast_data, get_weather_summary_description,
-    get_today_forecast, get_tomorrow_forecast,
-    decode_tracked_params, convert_temperature, convert_pressure, 
-    convert_wind_speed, get_wind_direction, get_text, get_translation_dict,
-    get_user_lang
-)
-from weather import get_weather, resolve_city_from_coords
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-from collections import Counter
-from texts import TEXTS
-
+# ИМПОРТЫ
+import json
 import logging
-import time
 import os
+import re
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from zoneinfo import ZoneInfo
+
 import requests
 import telebot
-import re
-import json
+from dotenv import load_dotenv
+from telebot import types
+
+from texts import TEXTS
+from weather import get_weather, resolve_city_from_coords, fetch_today_forecast, fetch_tomorrow_forecast
+from logic import (
+    # users / storage
+    get_user, save_user, update_user, update_user_city, update_user_unit,
+
+    # texts / i18n
+    get_text, get_translation_dict, get_user_lang,
+
+    # forecast / formatting
+    format_forecast, get_today_forecast, get_tomorrow_forecast, get_weekly_forecast_data,
+    get_weather_summary_description, 
+
+    # units / decoding
+    decode_tracked_params, decode_notification_settings,
+    convert_temperature, convert_pressure, convert_wind_speed, get_wind_direction,
+
+    # ui keyboards (генераторы)
+    generate_language_keyboard, generate_forecast_keyboard, generate_format_keyboard,
+    generate_notification_settings_keyboard, generate_unit_selection_keyboard,
+    generate_weather_data_keyboard, generate_language_keyboard,
+
+    # json-store helpers
+    get_data_field, update_data_field,
+
+    # misc
+    safe_execute, log_action,
+)
 
 
 #ШИФРОВАНИЕ
@@ -35,6 +52,20 @@ load_dotenv()
 bot_start_time = time.time()
 rounded_time = datetime.fromtimestamp(round(bot_start_time), timezone.utc)
 
+#КОНСТАНТЫ
+COUNTRY_CODES = ["KZ", "RU", "US", "DE", "FR", "IT", "CN", "KR", "JP"]
+
+CITY_QUERY_BY_COUNTRY = {
+    "KZ": ["Almaty", "Astana", "Shymkent", "Karaganda", "Aktobe"],
+    "RU": ["Moscow", "Saint Petersburg", "Kazan", "Novosibirsk", "Yekaterinburg"],
+    "US": ["New York", "Los Angeles", "Chicago", "Miami", "San Francisco"],
+    "DE": ["Berlin", "Munich", "Hamburg", "Frankfurt", "Cologne"],
+    "FR": ["Paris", "Marseille", "Lyon", "Toulouse", "Nice"],
+    "IT": ["Rome", "Milan", "Naples", "Turin", "Florence"],
+    "CN": ["Beijing", "Shanghai", "Guangzhou", "Shenzhen", "Chengdu"],
+    "KR": ["Seoul", "Busan", "Incheon", "Daegu", "Daejeon"],
+    "JP": ["Tokyo", "Osaka", "Kyoto", "Yokohama", "Sapporo"],
+}
 
 #ЛОГИРОВАНИЕ
 LOG_DIR = "logs"
@@ -78,18 +109,255 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 
 #ФУНКЦИИ
+@bot.message_handler(func=lambda m: getattr(m, "pinned_message", None) is not None)
+def _delete_pin_service_message(message):
+    try:
+        # чистим только в личных чатах
+        if getattr(message.chat, "type", None) != "private":
+            return
+        bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+    except Exception as e:
+        bot_logger.debug(f"Не удалось удалить системное сообщение о закреплении: {e}")
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("citypick_")
+    and (get_data_field("citypick_flow", call.message.chat.id) not in ("reg", "chg"))
+)
+def legacy_citypick_guard(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id, "Меню устарело. Откройте /start или Настройки → Изменить город.")
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+
+
 def track_bot_message(message):
     """Запоминает последнее отправленное сообщение от бота."""
     update_data_field("last_bot_message", message.chat.id, message.message_id)
 
+# def start_city_picker(chat_id: int, lang: str, flow: str):
+#     """
+#     Запускает выбор города и ОБЯЗАТЕЛЬНО сохраняет ID сообщения,
+#     чтобы потом его можно было удалить.
+#     """
+#     last_msg_id = get_data_field("last_bot_message", chat_id)
+#     safe_delete(chat_id, last_msg_id)
 
-@bot.message_handler(func=lambda message: not message.text.startswith("/"))
+#     update_data_field("citypick_flow", chat_id, flow)
+
+#     text = get_text("citypick_select_city", lang)  
+    
+#     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    
+#     btn_manual = types.KeyboardButton(get_text("citypick_btn_manual", lang)) 
+#     btn_geo = types.KeyboardButton(get_text("citypick_btn_geo", lang), request_location=True)
+    
+#     kb.add(btn_geo, btn_manual)
+    
+#     msg = bot.send_message(chat_id, text, reply_markup=kb)
+    
+#     update_data_field("last_bot_message", chat_id, msg.message_id)
+    
+#     bot.register_next_step_handler(msg, process_new_city_registration)
+
+def start_city_picker(chat_id: int, lang: str, flow: str):
+    """
+    Запускает выбор города, удаляя предыдущее сообщение (выбор cязыка).
+    """
+    # 1. Удаляем предыдущее сообщение (это было "Выберите язык")
+    last_msg_id = get_data_field("last_bot_message", chat_id)
+    safe_delete(chat_id, last_msg_id)
+
+    update_data_field("citypick_flow", chat_id, flow)
+
+    # Формируем новое сообщение
+    text = get_text("citypick_select_country", lang)
+    # Предполагаем, что у тебя есть функция build_country_kb
+    kb = build_country_kb(lang, flow=flow) 
+
+    # Отправляем "Выберите страну/город"
+    msg = bot.send_message(chat_id, text, reply_markup=kb)
+    
+    # ЗАПОМИНАЕМ ID сообщения "Выберите город"
+    update_data_field("last_bot_message", chat_id, msg.message_id)
+
+
+def build_country_kb(lang: str, flow: str = "reg") -> types.InlineKeyboardMarkup:
+    countries_map = get_translation_dict("countries", lang)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    buttons = []
+    for code in COUNTRY_CODES:
+        label = countries_map.get(code, code)
+        buttons.append(types.InlineKeyboardButton(label, callback_data=f"citypick_country_{code}"))
+    kb.add(*buttons)
+
+    kb.add(
+        types.InlineKeyboardButton(get_text("citypick_btn_manual", lang), callback_data="citypick_manual"),
+        types.InlineKeyboardButton(get_text("citypick_btn_geo", lang), callback_data="citypick_geo"),
+    )
+
+    # ✅ Кнопка отмены — только при смене города
+    if flow == "chg":
+        kb.add(types.InlineKeyboardButton(get_text("btn_cancel", lang), callback_data="cancel_changecity"))
+
+    return kb
+
+def build_city_kb(lang: str, country_code: str, flow: str = "reg") -> types.InlineKeyboardMarkup:
+    cities_tr = get_translation_dict("cities_by_country", lang)
+    cities = cities_tr.get(country_code) or CITY_QUERY_BY_COUNTRY.get(country_code, [])
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    for i, city_name in enumerate(cities):
+        kb.add(types.InlineKeyboardButton(city_name, callback_data=f"citypick_city_{country_code}_{i}"))
+
+    # нижний ряд: назад + (опционально) отмена
+    kb.add(types.InlineKeyboardButton(get_text("citypick_btn_back", lang), callback_data="citypick_back"))
+
+    if flow == "chg":
+        kb.add(types.InlineKeyboardButton(get_text("btn_cancel", lang), callback_data="cancel_changecity"))
+
+    return kb
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("citypick_country_"))
+def citypick_country(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        bot.answer_callback_query(call.id)
+        return
+    lang = get_user_lang(user)
+
+    country_code = call.data.replace("citypick_country_", "").strip().upper()
+    flow = get_data_field("citypick_flow", chat_id) or "chg"
+    kb = build_city_kb(lang, country_code, flow=flow)
+
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        text=get_text("citypick_select_city", lang),
+        reply_markup=kb
+    )
+    bot.answer_callback_query(call.id)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("citypick_city_"))
+def citypick_city(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        bot.answer_callback_query(call.id)
+        return
+    lang = get_user_lang(user)
+
+    # citypick_city_KZ_0
+    parts = call.data.split("_")
+    country_code = parts[2].upper()
+    idx = int(parts[3])
+
+    cities_tr = get_translation_dict("cities_by_country", lang)
+    cities = cities_tr.get(country_code) or CITY_QUERY_BY_COUNTRY.get(country_code, [])
+
+    if not cities or idx < 0 or idx >= len(cities):
+        bot.answer_callback_query(call.id, "⚠ City list is empty / index error")
+        return
+
+    city_name = cities[idx]
+
+    update_user_city(user_id, city_name, call.from_user.username)
+
+    flow = get_data_field("citypick_flow", chat_id) or ("reg" if not user.preferred_city else "chg")
+
+    # ✅ при смене города: "эхо" города -> сразу удалить
+    if flow == "chg":
+        try:
+            echo_msg = bot.send_message(chat_id, city_name)
+            bot.delete_message(chat_id, echo_msg.message_id)
+        except Exception:
+            pass
+
+    # финальный текст
+    if flow == "reg":
+        text = get_text("greet_success_end", lang).format(name=call.from_user.first_name, city=city_name)
+    else:
+        text = get_text("changecity_success_update", lang).format(city=city_name)
+
+    # удалить inline-сообщение с выбором города
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+
+    # ✅ сообщение об успехе — от лица бота
+    bot.send_message(chat_id, text)
+    refresh_daily_forecast(user_id)
+
+    send_main_menu(chat_id)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "citypick_back")
+def citypick_back(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        bot.answer_callback_query(call.id)
+        return
+    lang = get_user_lang(user)
+
+    flow = get_data_field("citypick_flow", chat_id) or "chg"
+    kb = build_country_kb(lang, flow=flow)
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        text=get_text("citypick_select_country", lang),
+        reply_markup=kb
+    )
+    bot.answer_callback_query(call.id)
+
+def require_registered_user(user_id: int, chat_id: int, lang_fallback: str = "ru"):
+    """
+    Возвращает user, если он есть в БД. Если пользователя нет — просит пройти /start и возвращает None.
+    """
+    user = get_user(user_id)
+    if not user:
+        bot.send_message(chat_id, get_text("error_user_not_found_start", lang_fallback))
+        return None
+    return user
+
+@bot.callback_query_handler(func=lambda call: call.data == "citypick_manual")
+def citypick_manual(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        bot.answer_callback_query(call.id)
+        return
+    lang = get_user_lang(user)
+
+    # важно: не отправляем “Привет… отправьте координаты…” — это неуместно на manual
+    prompt = get_text("changecity_prompt", lang) if user and user.preferred_city else get_text("greet_new_manual_prompt", lang)
+    msg = bot.send_message(chat_id, prompt)
+
+    bot.register_next_step_handler(msg, process_city_manual_input)
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(func=lambda m: bool(m.text) and not m.text.startswith("/"))
 def handle_all_messages(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    user = get_user(user_id)
-    lang = get_user_lang(user) if user else "ru"
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        return
+    lang = get_user_lang(user)
     current_menu_actions = get_menu_actions(lang)
 
     if message.date < bot_start_time:
@@ -102,41 +370,69 @@ def handle_all_messages(message):
     bot.send_message(chat_id, get_text("unknown_command", lang))
     send_main_menu(chat_id)
 
+@safe_execute
+def process_city_manual_input(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    user = get_user(user_id)
+    lang = get_user_lang(user) if user else "ru"
+
+    if not message.text:
+        bot.send_message(chat_id, get_text("error_no_input", lang))
+        return
+
+    city = message.text.strip()
+    if city.startswith("/"):
+        bot.send_message(chat_id, get_text("error_invalid_city_command", lang))
+        return
+
+    updated = update_user_city(user_id, city, message.from_user.username)
+
+    flow = get_data_field("citypick_flow", chat_id) or ("reg" if not user or not user.preferred_city else "chg")
+    if flow == "reg":
+        text = get_text("greet_success_end", lang).format(name=message.from_user.first_name, city=city)
+    else:
+        text = get_text("changecity_success_update", lang).format(city=city)
+
+    bot.send_message(chat_id, text)
+    refresh_daily_forecast(user_id)
+    send_main_menu(chat_id)
+
 """ОТПРАВКА МЕНЮ"""
-def menu_option(chat_id, reply_markup=None):
-    user = get_user(chat_id)
+def menu_option(user_id, reply_markup=None):
+    user = get_user(user_id)
     lang = get_user_lang(user)
 
     menu_message = bot.send_message(
-        chat_id,
+        user_id,
         get_text("decorative_message_menu", lang),
         reply_markup=reply_markup
     )
-    update_data_field("last_menu_message", chat_id, menu_message.message_id)
+    update_data_field("last_menu_message", user_id, menu_message.message_id)
     return menu_message.message_id
 
 
 
-def settings_option(chat_id, reply_markup=None):
-    user = get_user(chat_id)
+def settings_option(user_id, reply_markup=None):
+    user = get_user(user_id)
     lang = get_user_lang(user)
 
     settings_opt = bot.send_message(
-        chat_id,
+        user_id,
         get_text("decorative_message_settings", lang),
         reply_markup=reply_markup
     )
-    update_data_field("last_menu_message", chat_id, settings_opt.message_id)
+    update_data_field("last_menu_message", user_id, settings_opt.message_id)
     return settings_opt.message_id
 
 
 
-def send_main_menu(chat_id):
+def send_main_menu(user_id):
     """Отправка главного меню пользователю с учетом его языка."""
-    delete_last_menu_message(chat_id)
+    delete_last_menu_message(user_id)
     
     # Получаем пользователя и его язык
-    user = get_user(chat_id)
+    user = get_user(user_id)
     lang = get_user_lang(user)
 
     main_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -148,14 +444,14 @@ def send_main_menu(chat_id):
     )
     main_keyboard.row(get_text("basic_keyboard_button_3", lang))
     
-    menu_option(chat_id, reply_markup=main_keyboard)
+    menu_option(user_id, reply_markup=main_keyboard)
 
 
 
-def send_settings_menu(chat_id):
+def send_settings_menu(user_id):
     """Отправка клавиатуры с меню настроек пользователю."""
-    delete_last_menu_message(chat_id)
-    user = get_user(chat_id)
+    delete_last_menu_message(user_id)
+    user = get_user(user_id)
     lang = get_user_lang(user)
 
     settings_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -173,7 +469,7 @@ def send_settings_menu(chat_id):
         get_text("settings_keyboard_button_5", lang)
     )
     
-    settings_option(chat_id, reply_markup=settings_keyboard)
+    settings_option(user_id, reply_markup=settings_keyboard)
 
 
 
@@ -192,6 +488,15 @@ def delete_last_menu_message(chat_id):
         except Exception as e:
             bot_logger.warning(f"Общая ошибка при удалении: {e}")
 
+def safe_delete(chat_id, message_id):
+    """Безопасное удаление сообщения без краша бота."""
+    if not message_id:
+        return
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["forecast_today", "forecast_tomorrow", "forecast_week"])
@@ -200,8 +505,14 @@ def forecast_handler(call):
     user = get_user(call.from_user.id)
     menu_message_id = call.message.message_id
 
-    if not user or not user.preferred_city:
-        bot.send_message(chat_id, "⚠ Сначала укажите ваш город в настройках!")
+    if not user:
+        bot.send_message(chat_id, get_text("error_user_not_found_start", "ru"))
+        return
+
+    lang = get_user_lang(user)
+
+    if not user.preferred_city:
+        bot.send_message(chat_id, get_text("city_not_set", lang))
         return
 
     lang = get_user_lang(user)  
@@ -342,70 +653,56 @@ def back_to_main_callback(call):
 
 
 @bot.message_handler(commands=['start'])
+@safe_execute
 def start(message):
-    log_action("Получена команда /start", message)
     user_id = message.from_user.id
     chat_id = message.chat.id
-    
-    # Создаем или получаем пользователя (по дефолту язык ru)
+
+    # 2. Удаляем старое висящее меню бота (если было)
+    last_msg_id = get_data_field("last_bot_message", chat_id)
+    safe_delete(chat_id, last_msg_id)
+
     save_user(user_id, message.from_user.first_name)
     user = get_user(user_id)
     lang = get_user_lang(user)
     
-    delete_last_menu_message(chat_id)
+    # Проверка на старого пользователя
+    preferred_city = getattr(user, 'preferred_city', None)
 
-    # СЦЕНАРИЙ 1: Старый пользователь (город уже есть)
-    if user and user.preferred_city:
+    if preferred_city:
+        # Старый пользователь
         text = get_text("greet_returning", lang).format(
             name=message.from_user.first_name,
-            city=user.preferred_city
+            city=preferred_city
         )
-        msg = bot.reply_to(message, text)  
+        msg = bot.send_message(chat_id, text)
         update_data_field("last_bot_message", chat_id, msg.message_id)
         send_main_menu(chat_id)
-        
-    # СЦЕНАРИЙ 2: Новый пользователь (города нет)
     else:
-        # Отправляем приветствие и СРАЗУ клавиатуру выбора языка
-        keyboard = generate_language_keyboard(user)
+        # Новый пользователь
+        # is_registration=True убирает кнопку "Назад" и галочки
+        keyboard = generate_language_keyboard(user, is_registration=True)
         text = f"Привет/Hello, {message.from_user.first_name}!\n\n🇷🇺 Выберите язык / 🇺🇸 Choose language:"
         
         msg = bot.send_message(chat_id, text, reply_markup=keyboard)
+        # ЗАПОМИНАЕМ ID сообщения "Выберите язык"
         update_data_field("last_bot_message", chat_id, msg.message_id)
-
-
-def ask_for_city_initial(chat_id, user_id, lang, user_name):
-    """Вспомогательная функция, вызывается ПОСЛЕ выбора языка"""
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    btn_text = get_text("button_geo", lang)
-    keyboard.add(types.KeyboardButton(text=btn_text, request_location=True))
-    
-    text = get_text("greet_new", lang).format(name=user_name)
-    
-    msg = bot.send_message(chat_id, text, reply_markup=keyboard)
-    update_data_field("last_bot_message", chat_id, msg.message_id)
-    
-    # Теперь регистрируем ожидание ввода города
-    bot.register_next_step_handler(msg, process_new_city_registration)
 
 
 @bot.message_handler(commands=['weather'])
 def handle_weather_command(message):
-    """
-    Текущая погода. Отвечает реплаем на команду + переотправляет меню.
-    """
     chat_id = message.chat.id
-    # Используем from_user.id для получения настроек
     user = get_user(message.from_user.id)
-    
-    # Если юзер не найден или город не задан
-    if not user or not user.preferred_city:
-        lang = get_user_lang(user) if user else 'ru'
+
+    if not user:
+        bot.reply_to(message, get_text("error_user_not_found_start", "ru"))
+        return
+
+    lang = get_user_lang(user)
+    if not user.preferred_city:
         bot.reply_to(message, get_text("city_not_set", lang))
         return
 
-    # Получаем данные
-    lang = get_user_lang(user)
     weather_data = get_weather(user.preferred_city, lang=lang)
     
     if weather_data:
@@ -434,31 +731,14 @@ def handle_weather_command(message):
 
 @safe_execute
 @bot.message_handler(regexp=r"^(\/changecity|🏙 Изменить город|🏙 Change city|🏙 Қаланы өзгерту)$")
-def changecity(message):
+def cmd_changecity(message):
     user_id = message.from_user.id
-    user = get_user(user_id)
     chat_id = message.chat.id
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        return
     lang = get_user_lang(user)
-    
-    bot_logger.info(f"▸ Получена команда /changecity от {user_id}.")
-    delete_last_menu_message(chat_id)
-    
-    if user and user.preferred_city:
-        reply_text = get_text("changecity_current", lang).format(city=user.preferred_city)
-    else:
-        reply_text = get_text("changecity_none", lang)
-        
-    keyboard = types.InlineKeyboardMarkup()
-    cancel_text = get_text("btn_cancel", lang)
-    cancel_button = types.InlineKeyboardButton(cancel_text, callback_data="cancel_changecity")
-    keyboard.add(cancel_button)
-    
-    reply = bot.reply_to(message, reply_text, reply_markup=keyboard)
-    
-    update_data_field("last_menu_message", chat_id, reply.message_id)
-    update_data_field("last_user_command", chat_id, message.message_id)
-    
-    bot.register_next_step_handler(reply, process_new_city, show_menu=True)
+    start_city_picker(chat_id, lang, flow="chg")
 
 
 @safe_execute
@@ -479,6 +759,7 @@ def cancel_changecity_callback(call):
         except Exception as e:
             bot_logger.warning(f"▸ Ошибка при удалении сообщения команды /changecity: {e}")
     bot.clear_step_handler_by_chat_id(chat_id)
+    update_data_field("citypick_flow", chat_id, None)
     send_settings_menu(chat_id)
 
 
@@ -489,8 +770,13 @@ def cancel_changecity_callback(call):
     get_text("notifications_menu_btn", "kk")
 ])
 def notification_settings(message):
-    user = get_user(message.from_user.id)
     chat_id = message.chat.id
+    user = get_user(message.from_user.id)
+
+    if not user:
+        bot.send_message(chat_id, get_text("error_user_not_found_start", "ru"))
+        return
+
     lang = get_user_lang(user)
     
     bot_logger.info(f"▸ Открыто меню уведомлений для чата {chat_id}.")
@@ -553,14 +839,14 @@ def toggle_notification(call):
 @safe_execute
 @bot.message_handler(commands=['stop'])
 def stop_notifications(message):
-    user = get_user(message.from_user.id)
     chat_id = message.chat.id
-    lang = get_user_lang(user)
-    
+    user = get_user(message.from_user.id)
+
     if not user:
-        bot.send_message(chat_id, get_text("error_user_not_found", lang))
-        bot_logger.warning(f"▸ Команда /stop: пользователь {message.from_user.id} не найден.")
+        bot.send_message(chat_id, get_text("error_user_not_found_start", "ru"))
         return
+
+    lang = get_user_lang(user)
 
     delete_last_menu_message(chat_id)
     
@@ -659,13 +945,17 @@ def refresh_daily_forecast(user_id):
         return
 
     title = get_text("daily_forecast_title", lang)
-    
-    summary = get_weather_summary_description(fetch_today_forecast(user.preferred_city, lang=lang), user)
-    
-    forecast_message = (
-        f"{title}\n"
-        + format_forecast(raw_forecast, user)
-        + f"\n\n{summary}"
+    summary = get_weather_summary_description(
+        fetch_today_forecast(user.preferred_city, lang=lang),
+        user
+    )
+
+    forecast_message = format_forecast(
+        raw_forecast,
+        user,
+        title,
+        summary_text=summary, 
+        is_daily_forecast=True  
     )
 
     try:
@@ -688,10 +978,21 @@ def refresh_daily_forecast(user_id):
 
 @safe_execute
 def update_existing_forecast(user_id):
+    """
+    Обновляет уже существующий ежедневный прогноз:
+    - если есть last_daily_forecast -> редактирует его (это и есть "закреплённое")
+    - если нет -> создаёт новый через refresh_daily_forecast()
+    """
     last_forecast_id = get_data_field("last_daily_forecast", user_id)
     user = get_user(user_id)
+
     if not user or not user.preferred_city:
         bot_logger.error(f"▸ Ошибка: не найден пользователь {user_id} или его город.")
+        return
+
+    # если ещё не было прогноза — создаём и закрепляем
+    if not last_forecast_id:
+        refresh_daily_forecast(user_id)
         return
 
     lang = get_user_lang(user)
@@ -700,70 +1001,37 @@ def update_existing_forecast(user_id):
     if not raw_forecast:
         bot_logger.warning(f"▸ `get_today_forecast` не вернула данные для {user.preferred_city}!")
         return
-    
-    # Защита от отсутствия таймзоны
-    try:
-        user_tz = ZoneInfo(user.timezone or "UTC")
-    except Exception:
-        user_tz = ZoneInfo("UTC")
-        
-    updated_time = datetime.now(user_tz).strftime("%H:%M")
 
     title = get_text("daily_forecast_title", lang)
-    updated_label = get_text("daily_forecast_updated", lang).format(time=updated_time)
 
-    forecast_message = (
-        f"{title}\n"
-        # f"{updated_label}\n"
-        + format_forecast(raw_forecast, user)
-        + "\n\n"
-        + get_weather_summary_description(
-            fetch_today_forecast(user.preferred_city, lang=lang),
-            user
-        )
+    summary = get_weather_summary_description(
+        fetch_today_forecast(user.preferred_city, lang=lang),
+        user
     )
 
-    if last_forecast_id:
-        try:
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=last_forecast_id,
-                text=forecast_message,
-                parse_mode="HTML"
-            )
-            bot_logger.info(f"▸ Прогноз обновлён для пользователя {user_id}.")
-            return
-        except Exception as edit_error:
-            bot_logger.warning(f"▸ Не удалось обновить сообщение, отправляем новый прогноз: {edit_error}")
-
-        try:
-            bot.delete_message(chat_id=user_id, message_id=last_forecast_id)
-            bot_logger.info(f"▸ Старый прогноз удалён для пользователя {user_id}.")
-        except Exception as del_error:
-            bot_logger.warning(f"▸ Не удалось удалить старый прогноз: {del_error}")
+    # ✅ ВАЖНО: format_forecast требует title_text
+    forecast_message = format_forecast(
+        raw_forecast,
+        user,
+        title,
+        summary_text=summary, 
+        is_daily_forecast=True
+    )
 
     try:
-        sent_message = bot.send_message(
-            user_id,
-            forecast_message,
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=last_forecast_id,
+            text=forecast_message,
             parse_mode="HTML"
         )
-        update_data_field("last_daily_forecast", user_id, sent_message.message_id)
-        bot_logger.info(f"▸ Новый прогноз отправлен пользователю {user_id}.")
-
-        try:
-            bot.pin_chat_message(
-                chat_id=user_id,
-                message_id=sent_message.message_id,
-                disable_notification=True,
-            )
-            bot_logger.info(f"▸ Новый прогноз закреплён для пользователя {user_id}.")
-        except Exception as pin_error:
-            bot_logger.warning(f"▸ Не удалось закрепить сообщение: {pin_error}")
-
-    except Exception as e:
-        bot_logger.error(f"▸ Ошибка при отправке прогноза: {e}")
-
+        bot_logger.info(f"▸ Прогноз обновлён (edit) для пользователя {user_id}.")
+        return
+    except Exception as edit_error:
+        # Если Telegram не дал редактировать (сообщение удалено/не найдено/и т.п.) —
+        # тогда вынужденно пересоздаём и закрепляем заново.
+        bot_logger.warning(f"▸ Не удалось отредактировать прогноз для {user_id}: {edit_error}")
+        refresh_daily_forecast(user_id)
 
 
 @safe_execute
@@ -774,92 +1042,56 @@ def format_settings(param, reply_to=None):
         chat_id = param.chat.id
         reply_to = param.message_id if reply_to is None else reply_to
 
-    try:
-        update_data_field("last_user_command", chat_id, reply_to)
-    except Exception as e:
-        bot_logger.error(f"▸ Ошибка при сохранении last_user_command для чата {chat_id}: {e}")
+    update_data_field("last_user_command", chat_id, reply_to)
 
     last_menu_id = get_data_field("last_menu_message", chat_id)
     if last_menu_id:
         try:
             bot.delete_message(chat_id, last_menu_id)
-            update_data_field("last_menu_message", chat_id, None)
-        except Exception as e:
-            bot_logger.warning(f"▸ Ошибка при удалении старого сообщения: {e}")
+        except Exception:
+            pass
+        update_data_field("last_menu_message", chat_id, None)
 
     user = get_user(chat_id)
     if not user:
         bot_logger.error(f"▸ Ошибка: пользователь {chat_id} не найден в format_settings()")
         bot.send_message(chat_id, get_text("error_user_not_found_start"))
         return
-    
-    user = get_user(chat_id)
+
     lang = get_user_lang(user)
-    # Получаем переводы единиц измерения для текущего языка
     unit_trans = get_translation_dict("unit_translations", lang)
 
     header = get_text("settings_units_header", lang)
-    temp = get_text("settings_units_temp", lang).format(
-        val=unit_trans["temp"].get(user.temp_unit, user.temp_unit)
-    )
-    pressure = get_text("settings_units_pressure", lang).format(
-        val=unit_trans["pressure"].get(user.pressure_unit, user.pressure_unit)
-    )
-    wind = get_text("settings_units_wind", lang).format(
-        val=unit_trans["wind_speed"].get(user.wind_speed_unit, user.wind_speed_unit)
-    )
+    temp = get_text("settings_units_temp", lang).format(val=unit_trans["temp"].get(user.temp_unit, user.temp_unit))
+    pressure = get_text("settings_units_pressure", lang).format(val=unit_trans["pressure"].get(user.pressure_unit, user.pressure_unit))
+    wind = get_text("settings_units_wind", lang).format(val=unit_trans["wind_speed"].get(user.wind_speed_unit, user.wind_speed_unit))
     choose = get_text("settings_units_choose", lang)
 
-    text = (
-        f"<b>{header}</b>\n"
-        f"<blockquote>"
-        f"{temp}\n"
-        f"{pressure}\n"
-        f"{wind}"
-        f"</blockquote>\n"
-        f"{choose}"
-    )
+    text = f"<b>{header}</b>\n<blockquote>{temp}\n{pressure}\n{wind}</blockquote>\n{choose}"
 
     menu_message_id = get_data_field("last_format_settings_menu", chat_id)
-    # Генерируем клавиатуру с учетом языка
     keyboard = generate_format_keyboard(lang)
-    
+
     try:
         if menu_message_id:
-            bot.edit_message_text(
-                text=text,
-                chat_id=chat_id,
-                message_id=menu_message_id,
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
-            bot_logger.info(f"▸ Меню единиц измерения обновлено для чата {chat_id}.")
+            bot.edit_message_text(text=text, chat_id=chat_id, message_id=menu_message_id, reply_markup=keyboard, parse_mode="HTML")
         else:
             raise KeyError
-    except Exception as e:
-        bot_logger.warning(f"▸ Ошибка при редактировании сообщения: {e}. Отправляем новое сообщение.")
-        try:
-            msg = bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=keyboard,
-                reply_to_message_id=reply_to,
-                parse_mode="HTML"
-            )
-            update_data_field("last_format_settings_menu", chat_id, msg.message_id)
-            bot_logger.info(f"▸ Новое меню единиц измерения отправлено в чат {chat_id}.")
-        except Exception as send_error:
-            bot_logger.error(f"▸ Ошибка при отправке нового сообщения: {send_error}")
+    except Exception:
+        msg = bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, reply_to_message_id=reply_to, parse_mode="HTML")
+        update_data_field("last_format_settings_menu", chat_id, msg.message_id)
 
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "return_to_format_settings")
 def return_to_format_settings(call):
+    user_id = call.from_user.id
     chat_id = call.message.chat.id
-    user = get_user(chat_id)
+
+    user = get_user(user_id)
     if not user:
-        bot_logger.error(f"▸ Ошибка: пользователь {chat_id} не найден.")
-        bot.send_message(chat_id, get_text("error_user_not_found_start"))
+        bot_logger.error(f"▸ Ошибка: пользователь {user_id} не найден.")
+        bot.send_message(chat_id, get_text("error_user_not_found_start", "ru"))
         return
 
     lang = get_user_lang(user)
@@ -879,25 +1111,20 @@ def return_to_format_settings(call):
 
     text = (
         f"<b>{header}</b>\n"
-        f"<blockquote>"
-        f"{temp}\n"
-        f"{pressure}\n"
-        f"{wind}"
-        f"</blockquote>\n"
+        f"<blockquote>{temp}\n{pressure}\n{wind}</blockquote>\n"
         f"{choose}"
     )
 
-    try:
-        bot.edit_message_text(
-            text=text,
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=generate_format_keyboard(lang),
-            parse_mode="HTML"
-        )
-        bot_logger.info(f"▸ Меню единиц измерения обновлено для чата {chat_id}.")
-    except Exception as e:
-        bot_logger.warning(f"▸ Ошибка при обновлении меню единиц измерения: {e}")
+    keyboard = generate_format_keyboard(lang)
+
+    # Редактируем то сообщение, где сейчас находится inline-меню
+    bot.edit_message_text(
+        text=text,
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
 
 
 
@@ -906,77 +1133,6 @@ def return_to_format_settings(call):
 def format_settings_callback(call):
     """Обработчик кнопки 'Сохранить', возвращает в меню формата данных"""
     format_settings(call.message)
-
-
-@safe_execute
-@bot.message_handler(func=lambda message: True)
-def settings_back_to_main_menu(message):
-    chat_id = message.chat.id
-    user = get_user(chat_id)
-    lang = get_user_lang(user) if user else "ru"
-
-    if message.text != get_text("btn_back", lang):
-        return
-
-    delete_last_menu_message(chat_id)
-
-    last_settings_message_id = get_data_field("last_settings_command", chat_id)
-    if last_settings_message_id:
-        try:
-            bot.delete_message(chat_id, last_settings_message_id)
-            update_data_field("last_settings_command", chat_id, None)
-            bot_logger.info(
-                f"▸ Удалено сообщение настроек {last_settings_message_id} для чата {chat_id}."
-            )
-        except Exception as e:
-            bot_logger.warning(f"▸ Ошибка при удалении сообщения настроек: {e}")
-
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception as e:
-        bot_logger.warning(f"▸ Ошибка при удалении сообщения кнопки назад: {e}")
-
-    send_main_menu(chat_id)
-
-
-
-@safe_execute
-@bot.message_handler(func=lambda message: True)
-def weather_data_settings(message):
-    chat_id = message.chat.id
-    user = get_user(message.from_user.id)
-    lang = get_user_lang(user) if user else "ru"
-
-    if message.text != get_text("settings_weather_data_btn", lang):
-        return
-
-    delete_last_menu_message(chat_id)
-    update_data_field("last_user_command", chat_id, message.message_id)
-    bot_logger.info(
-        f"▸ Сохранён ID последней команды: {message.message_id} для чата {chat_id}."
-    )
-
-    if not user:
-        bot_logger.error(f"❌ Ошибка: пользователь {chat_id} не найден.")
-        bot.send_message(chat_id, get_text("error_user_not_found", lang))
-        return
-
-    text = get_text("settings_weather_data_text", lang)
-
-    try:
-        keyboard = generate_weather_data_keyboard(user)
-        bot.send_message(
-            chat_id,
-            text,
-            reply_markup=keyboard,
-            reply_to_message_id=message.message_id
-        )
-        bot_logger.info(
-            f"▸ Меню настроек погодных данных отправлено пользователю {chat_id}."
-        )
-    except Exception as e:
-        bot_logger.error(f"❌ Ошибка при отправке меню погодных данных: {e}")
-
 
 
 @safe_execute
@@ -1013,32 +1169,6 @@ def toggle_weather_param(call):
         bot_logger.error(f"❌ Ошибка при обновлении tracked_weather_params для пользователя {user.user_id}: {e}")
 
 
-def get_menu_actions(lang="lang"):
-    return {
-        get_text("menu_weather_now", lang): handle_weather_command,
-        get_text("menu_forecast", lang): forecast_menu_handler,
-        get_text("menu_settings", lang): lambda msg: send_settings_menu(msg.chat.id),
-        get_text("menu_change_city", lang): changecity,
-        get_text("menu_notifications", lang): notification_settings,
-        get_text("menu_back", lang): settings_back_to_main_menu,
-        get_text("menu_units", lang): lambda msg: format_settings(msg),
-        get_text("menu_weather_data", lang): weather_data_settings,
-        get_text("menu_language", lang): language_settings,
-    }
-
-@safe_execute
-@bot.message_handler(func=lambda message: True)
-def menu_handler(message):
-    user = get_user(message.chat.id)
-    lang = get_user_lang(user) if user else "ru"
-
-    menu_actions = get_menu_actions(lang)
-    action = menu_actions.get(message.text)
-    if not action:
-        return
-
-    action(message)
-
 @safe_execute
 @bot.message_handler(func=lambda message: message.text in [
     get_text("menu_language", "ru"),
@@ -1048,6 +1178,11 @@ def menu_handler(message):
 def language_settings(message):
     chat_id = message.chat.id
     user = get_user(message.from_user.id)
+
+    if not user:
+        bot.send_message(chat_id, get_text("error_user_not_found_start", "ru"))
+        return
+
     lang = get_user_lang(user)
 
     bot_logger.info(f"▸ Открыто меню языков для чата {chat_id}.")
@@ -1111,9 +1246,12 @@ def set_language_callback(call):
         except:
             pass
             
-        ask_for_city_initial(chat_id, user_id, new_lang_code, call.from_user.first_name)
+        start_city_picker(chat_id, new_lang_code, flow="reg")
     else:
-        # Если город уже есть, просто обновляем главное меню (на случай если мы в настройках)
+        try:
+            update_existing_forecast(user_id)
+        except Exception:
+            update_existing_forecast(user_id)
         pass
 
 @safe_execute
@@ -1228,98 +1366,98 @@ def process_new_city(message, show_menu=False):
 def process_new_city_registration(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    user = get_user(chat_id)
+    user = get_user(user_id)
     lang = get_user_lang(user)
 
-    def error_reply(comment):
-        base_text = get_text("greet_new", "lang").format(name=message.from_user.first_name)
-        full_text = f"{base_text}\n\n{comment}"
+    # 1. Удаляем ВВОД ПОЛЬЗОВАТЕЛЯ ("Алматы")
+    # Делаем паузу 0.5 сек, чтобы глаз успел заметить отправку, потом удаляем
+    try:
+        time.sleep(0.5) # Маленькая задержка для визуального подтверждения
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
 
-        last_bot_msg_id = get_data_field("last_bot_message", chat_id)
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        button_geo = types.KeyboardButton(text=get_text("button_geo", "lang"), request_location=True)
-        keyboard.add(button_geo)
+    # 2. Удаляем сообщение бота "Выберите город" (которое мы сохранили в start_city_picker)
+    last_bot_msg_id = get_data_field("last_bot_message", chat_id)
+    safe_delete(chat_id, last_bot_msg_id)
 
-        try:
-            if last_bot_msg_id:
-                bot.delete_message(chat_id, last_bot_msg_id)
-        except Exception as e:
-            bot_logger.warning(f"Не удалось удалить сообщение {last_bot_msg_id} для пользователя {user_id}: {e}")
+    flow = get_data_field("citypick_flow", chat_id) or "reg"
 
-        msg = bot.send_message(
-            chat_id,
-            full_text,
-            reply_markup=keyboard
-        )
+    # Функция отправки ошибки (если ввели бред)
+    def error_reply(error_key):
+        if flow == "chg":
+            prompt = get_text("citypick_manual_prompt_chg", lang)
+        else:
+            prompt = get_text("greet_new_manual_prompt", lang) # Тот самый ключ
+
+        full_text = f"{get_text(error_key, lang)}\n\n{prompt}"
+        
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        kb.add(types.KeyboardButton(text=get_text("citypick_btn_geo", lang), request_location=True))
+        
+        msg = bot.send_message(chat_id, full_text, reply_markup=kb)
+        # Запоминаем сообщение с ошибкой, чтобы потом и его удалить
         update_data_field("last_bot_message", chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_new_city_registration)
 
-    # --- Обработка геолокации ---
+    # --- Обработка ввода ---
     if message.location:
-        latitude = message.location.latitude
-        longitude = message.location.longitude
-        city = resolve_city_from_coords(latitude, longitude)
+        city = resolve_city_from_coords(message.location.latitude, message.location.longitude)
         if not city:
-            bot_logger.warning(f"Не удалось определить город по координатам ({latitude}, {longitude}) от пользователя {user_id}.")
-            error_reply(get_text("error_city_not_found_coords", lang))
+            error_reply("error_city_not_found_coords")
             return
-    # --- Обработка текстового ввода ---
     elif message.text:
         city = message.text.strip()
-        if city == "/start":
-            bot_logger.info(f"Пользователь {user_id} отправил /start вместо города при регистрации.")
+        if city == "/start": 
             start(message)
             return
         if city.startswith("/") or not city:
-            bot_logger.info(f"Пользователь {user_id} отправил некорректное название города: {city}.")
-            error_reply(get_text("error_invalid_city_command", lang))
-            try:
-                bot.delete_message(chat_id, message.message_id)
-            except Exception as e:
-                bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
+            error_reply("error_invalid_city_command")
             return
         if not re.match(r'^[A-Za-zА-Яа-яЁё\s\-]+$', city):
-            bot_logger.info(f"Пользователь {user_id} отправил название города с недопустимыми символами: {city}.")
-            error_reply(get_text("error_invalid_city_chars", lang))
-            try:
-                bot.delete_message(chat_id, message.message_id)
-            except Exception as e:
-                bot_logger.warning(f"Не удалось удалить сообщение пользователя {user_id}: {e}")
+            error_reply("error_invalid_city_chars")
             return
     else:
-        bot_logger.warning(f"Сообщение от пользователя {user_id} не содержит текста или локации.")
-        error_reply(get_text("error_no_input", lang))
+        error_reply("error_no_input")
         return
 
-    # --- Сохраняем город ---
-    updated = update_user_city(user_id, city, message.from_user.username)
-    if updated:
-        bot_logger.info(f"Пользователь {user_id} успешно сменил город на {city}.")
-        success_text = get_text("changecity_success_update", lang).format(city=city)
+    # --- УСПЕХ ---
+    update_user_city(user_id, city, message.from_user.username)
+    
+    if flow == "chg":
+        success_text = get_text("citypick_success_chg", lang).format(city=city)
     else:
-        bot_logger.info(f"Пользователь {user_id} повторно установил город: {city}.")
-        success_text = get_text("changecity_success_update", "lang").format(city=city)
+        success_text = get_text("citypick_success_reg", lang).format(city=city)
 
-    base_text = f"Привет, {message.from_user.first_name}!\n{success_text}\n\n{get_text('greet_success_end', lang)}"
-    full_text = base_text
-
-    last_bot_msg_id = get_data_field("last_bot_message", chat_id)
-    try:
-        if last_bot_msg_id:
-            bot.delete_message(chat_id, last_bot_msg_id)
-    except Exception as e:
-        bot_logger.warning(f"Не удалось удалить сообщение {last_bot_msg_id} для пользователя {user_id}: {e}")
-
+    # Отправляем сообщение успеха. Кнопок нет (Remove)
     msg = bot.send_message(
-        chat_id,
-        full_text,
+        chat_id, 
+        success_text, 
         reply_markup=types.ReplyKeyboardRemove()
     )
-    update_data_field("last_bot_message", chat_id, msg.message_id)
+    
+    # Обнуляем last_bot_message, так как "цепочка меню" закончилась.
+    # Это сообщение останется висеть как итог, пока новое меню не придет.
+    update_data_field("last_bot_message", chat_id, None)
+
     refresh_daily_forecast(user_id)
     send_main_menu(chat_id)
 
+@safe_execute
+@bot.callback_query_handler(func=lambda call: call.data in ("open_settings", "back_to_settings"))
+def open_settings_callback(call):
+    chat_id = call.message.chat.id
 
+    # закрываем "часики" сразу
+    bot.answer_callback_query(call.id)
+
+    # можно удалить текущее inline-сообщение (не обязательно, но аккуратно)
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+
+    send_settings_menu(chat_id)
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["change_temp_unit", "change_pressure_unit", "change_wind_speed_unit"])
@@ -1409,8 +1547,67 @@ def clear_old_updates():
     if updates:
         last_update_id = updates[-1].update_id
         bot_logger.info(f"Сброшены старые обновления до [offset {last_update_id + 1}]")
-        
 
+@safe_execute
+def settings_back_to_main_menu(message):
+    """Кнопка 'Назад/Выход' из настроек -> главное меню + удалить сообщение пользователя сразу."""
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        return
+
+    # ✅ удалить сообщение пользователя с нажатием кнопки
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    # удалить декоративное меню настроек
+    delete_last_menu_message(chat_id)
+
+    # вернуть главное меню
+    send_main_menu(chat_id)
+
+
+@safe_execute
+def weather_data_settings(message):
+    """Открывает меню выбора отображаемых погодных параметров (inline)."""
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    user = require_registered_user(user_id, chat_id, "ru")
+    if not user:
+        return
+
+    lang = get_user_lang(user)
+
+    delete_last_menu_message(chat_id)
+    update_data_field("last_user_command", chat_id, message.message_id)
+
+    keyboard = generate_weather_data_keyboard(user)
+    text = get_text("weather_data_settings_text", lang) if "weather_data_settings_text" else "Выберите, какие параметры показывать:"
+
+    bot.send_message(
+        chat_id,
+        text,
+        reply_markup=keyboard,
+        reply_to_message_id=message.message_id
+    )
+
+def get_menu_actions(lang="ru"):
+    return {
+        get_text("menu_weather_now", lang): handle_weather_command,
+        get_text("menu_forecast", lang): forecast_menu_handler,
+        get_text("menu_settings", lang): lambda msg: send_settings_menu(msg.chat.id),
+        get_text("menu_change_city", lang): cmd_changecity,
+        get_text("menu_notifications", lang): notification_settings,
+        get_text("menu_back", lang): settings_back_to_main_menu,
+        get_text("menu_units", lang): lambda msg: format_settings(msg),
+        get_text("menu_weather_data", lang): weather_data_settings,
+        get_text("menu_language", lang): language_settings,
+    }
 
 if __name__ == '__main__':
     bot_logger.info("Бот запущен.")

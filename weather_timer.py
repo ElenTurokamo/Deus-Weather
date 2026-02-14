@@ -104,8 +104,37 @@ def format_forecast_for_timer(day_data, user, title_text, daily_summary):
     
     header_html = f"<blockquote><b>{title_text}</b></blockquote>"
     
-    date_str = day_data.get('date', datetime.now().strftime("%d.%m"))
-    day_name = day_data.get('day_name', '')
+    tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
+
+    # Пытаемся восстановить datetime объект из day_data
+    if 'dt' in day_data:
+        dt_obj = datetime.fromtimestamp(day_data['dt'], tz)
+    elif 'date' in day_data and len(day_data['date']) == 5:
+        # Парсим формат "ДД.ММ", если нет timestamp
+        try:
+            d, m = map(int, day_data['date'].split('.'))
+            now = datetime.now(tz)
+            # Если сейчас конец года (декабрь), а прогноз на январь, или наоборот - корректировка года здесь не критична для таймера
+            dt_obj = now.replace(month=m, day=d)
+        except:
+            dt_obj = datetime.now(tz)
+    else:
+        dt_obj = datetime.now(tz)
+
+    # Получаем словари для перевода
+    months_map = get_translation_dict("months", lang)
+    weekdays_map = get_translation_dict("weekdays", lang)
+    
+    # Определяем день недели и месяц
+    en_weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    wd_key = en_weekdays[dt_obj.weekday()]
+    
+    wd_str = weekdays_map.get(wd_key, wd_key)   # "Пятница"
+    month_str = months_map.get(dt_obj.month, dt_obj.strftime("%B")) # "февраля"
+    day_num = dt_obj.day
+
+    # Собираем строку даты
+    date_line = f"<b>{wd_str}, {day_num} {month_str}</b>"
     
     desc = ""
     if "descriptions" in day_data and day_data["descriptions"]:
@@ -113,7 +142,7 @@ def format_forecast_for_timer(day_data, user, title_text, daily_summary):
     elif "description" in day_data:
         desc = day_data['description'].capitalize()
     
-    info_text = f"<b>{day_name}, {date_str}</b>" if day_name else f"<b>{date_str}</b>"
+    info_text = date_line
     if desc:
         info_text += f"\n▸ {desc}"
     

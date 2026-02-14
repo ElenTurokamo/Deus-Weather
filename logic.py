@@ -23,7 +23,10 @@ def get_user_lang(user):
 
 def get_text(key, lang):
     lang = lang or "ru"
-    return TEXTS.get(lang, TEXTS["ru"]).get(key, f"MISSING_{key}")
+    lang_dict = TEXTS.get(lang, {})
+    if key in lang_dict:
+        return lang_dict[key]
+    return TEXTS.get("ru", {}).get(key, f"MISSING_{key}")
 
 def get_translation_dict(category, lang="ru"):
     lang = lang or "ru"
@@ -464,43 +467,48 @@ def generate_weather_data_keyboard(user):
     keyboard.add(types.InlineKeyboardButton(get_text("btn_back", lang), callback_data="back_to_settings"))
     return keyboard
     
-def generate_language_keyboard(user):
-    """Создаёт клавиатуру для выбора языка (сетка 3x3)"""
+def generate_language_keyboard(user, is_registration=False):
+    """
+    Генерирует клавиатуру выбора языка.
+    :param user: объект пользователя (или dict)
+    :param is_registration: Если True — скрываем кнопку Назад и текущие галочки.
+    """
+    # Получаем текущий код языка для галочки (если это не регистрация)
     current_lang = get_user_lang(user)
     
-    languages = {
-        "ru": "🇷🇺 Русский",
-        "en": "🇺🇸 English",
-        "kk": "🇰🇿 Қазақша",
-        "de": "🇩🇪 Deutsch",
-        "fr": "🇫🇷 Français",
-        "it": "🇮🇹 Italiano",
-        "zh": "🇨🇳 中文",
-        "ko": "🇰🇷 한국어",
-        "ja": "🇯🇵 日本語"
-    }
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    
+    # Список доступных языков (коды должны совпадать с ключами в TEXTS)
+    languages = [
+        ('🇷🇺 Русский', 'ru'),
+        ('🇺🇸 English', 'en'),
+        ('🇰🇿 Қазақша', 'kk'),
+        ('🇩🇪 Deutsch', 'de'),
+        ('🇫🇷 Français', 'fr'),
+        ('🇮🇹 Italiano', 'it'),
+        ('🇨🇳 中文', 'zh'),
+        ('🇰🇷 한국어', 'ko'),
+        ('🇯🇵 日本語', 'ja')
+    ]
 
-    keyboard = types.InlineKeyboardMarkup(row_width=3)
-    
     buttons = []
-    for code, label in languages.items():
-        if code == current_lang:
-            text = f"✅ {label}"
+    for text, code in languages:
+        # Логика галочки: ставим ТОЛЬКО если это НЕ регистрация и язык совпадает
+        if not is_registration and code == current_lang:
+            btn_text = f"✅ {text}"
         else:
-            text = label
+            btn_text = text
             
-        buttons.append(
-            types.InlineKeyboardButton(
-                text=text,
-                callback_data=f"set_lang_{code}"
-            )
-        )
-    keyboard.add(*buttons)
+        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=f"set_lang_{code}"))
+
+    markup.add(*buttons)
+
+    # Кнопку "Назад" добавляем ТОЛЬКО если это НЕ регистрация (настройки)
+    if not is_registration:
+        back_text = get_text('btn_back', current_lang)
+        markup.add(types.InlineKeyboardButton(back_text, callback_data="open_settings"))
     
-    back_text = get_text("btn_back", current_lang)
-    keyboard.add(types.InlineKeyboardButton(back_text, callback_data="back_to_settings"))
-    
-    return keyboard
+    return markup
 
 def generate_notification_settings_keyboard(user):
     """Создаёт клавиатуру для выбора настроек уведомлений"""
@@ -959,7 +967,7 @@ def get_weather_summary_description(forecast_data, user):
 
     return get_text("weather_summary_clear", lang)
 
-def format_forecast(weather_data, user, title_text, summary_text=None):
+def format_forecast(weather_data, user, title_text, summary_text=None, *, is_daily_forecast: bool = False):
     """
     Универсальная функция форматирования.
     Дата теперь берется из словаря переводов (texts.py).
@@ -970,7 +978,9 @@ def format_forecast(weather_data, user, title_text, summary_text=None):
     unit_trans = get_translation_dict("unit_translations", lang)
     labels = get_translation_dict("weather_data_labels", lang) 
 
-    
+    forecastLable = get_text("daily_forecast_title", lang)
+    daily_forecast = False
+
     # --- 2. ДАТА И ОПИСАНИЕ (Динамический перевод) ---
     tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
 
@@ -1106,8 +1116,12 @@ def format_forecast(weather_data, user, title_text, summary_text=None):
 
     metrics_text = "\n".join(metrics_lines)
 
+
     # --- СБОРКА ИТОГОВОГО СООБЩЕНИЯ ---
-    final_message = f"{info_text}"
+    if is_daily_forecast:
+        final_message = f"{forecastLable}\n{info_text}"
+    else:
+        final_message = f"{info_text}"
     
     if metrics_text:
         final_message += f"\n─────────────────────\n<blockquote expandable>{metrics_text}</blockquote>"
