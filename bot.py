@@ -294,8 +294,7 @@ def citypick_city(call):
     except Exception:
         pass
 
-    # ✅ сообщение об успехе — от лица бота
-    bot.send_message(chat_id, text)
+    bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
     refresh_daily_forecast(user_id)
 
     send_main_menu(chat_id)
@@ -394,7 +393,7 @@ def process_city_manual_input(message):
     else:
         text = get_text("changecity_success_update", lang).format(city=city)
 
-    bot.send_message(chat_id, text)
+    bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
     refresh_daily_forecast(user_id)
     send_main_menu(chat_id)
 
