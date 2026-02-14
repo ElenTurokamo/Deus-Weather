@@ -970,166 +970,153 @@ def get_weather_summary_description(forecast_data, user):
 def format_forecast(weather_data, user, title_text, summary_text=None, *, is_daily_forecast: bool = False):
     """
     Универсальная функция форматирования.
-    Дата теперь берется из словаря переводов (texts.py).
+
+    Daily (закреп): как эталон:
+      Title(blockquote) -> Summary(line) -> Separator -> Metrics(expandable)
+
+    Остальные прогнозы:
+      Date -> (Desc только если НЕТ summary_text) -> Summary(если есть) -> Separator -> Metrics(expandable)
     """
     lang = get_user_lang(user)
     tracked_params = decode_tracked_params(getattr(user, 'tracked_weather_params', 0))
-    
+
     unit_trans = get_translation_dict("unit_translations", lang)
-    labels = get_translation_dict("weather_data_labels", lang) 
+    labels = get_translation_dict("weather_data_labels", lang)
 
-    forecastLable = get_text("daily_forecast_title", lang)
-    daily_forecast = False
-
-    # --- 2. ДАТА И ОПИСАНИЕ (Динамический перевод) ---
-    tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
-
-    # Восстанавливаем объект времени (datetime)
-    if 'dt' in weather_data:
-        dt_obj = datetime.fromtimestamp(weather_data['dt'], tz)
-        show_time = True
-    elif 'date' in weather_data and len(weather_data['date']) == 5:
-        # Пытаемся распарсить формат "ДД.ММ" из прогноза
-        try:
-            d, m = map(int, weather_data['date'].split('.'))
-            now = datetime.now(tz)
-            dt_obj = now.replace(month=m, day=d)
-            show_time = False 
-        except:
-            dt_obj = datetime.now(tz)
-            show_time = True
-    else:
-        dt_obj = datetime.now(tz)
-        show_time = True
-
-    # Получаем словари перевода из texts.py
-    # Ожидается, что в texts.py есть ключи "months" (1..12) и "weekdays" (Monday..Sunday)
-    months_map = get_translation_dict("months", lang)
-    weekdays_map = get_translation_dict("weekdays", lang)
-    
-    # Стандартные ключи для дней недели (Python weekday() -> 0..6)
-    en_weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    wd_key = en_weekdays[dt_obj.weekday()]
-    
-    # Достаем перевод
-    wd_str = weekdays_map.get(wd_key, wd_key)  # Например "Суббота"
-    # Месяц (ключ - int)
-    month_str = months_map.get(dt_obj.month, dt_obj.strftime("%B")) # Например "февраля"
-    
-    day_num = dt_obj.day
-    time_str = dt_obj.strftime("%H:%M")
-
-    # Сборка строки даты: "Суббота, 7 февраля 11:31"
-    if show_time:
-        date_line = f"<b>{wd_str}, {day_num} {month_str} {time_str}</b>"
-    else:
-        date_line = f"<b>{wd_str}, {day_num} {month_str}</b>"
-
-    # Описание погоды
-    desc = ""
-    if "descriptions" in weather_data and isinstance(weather_data["descriptions"], list):
-        if weather_data["descriptions"]:
-            desc = Counter(weather_data["descriptions"]).most_common(1)[0][0].capitalize()
-    elif "description" in weather_data:
-        desc = str(weather_data['description']).capitalize()
-    
-    if desc:
-        date_line += f"\n▸ {desc}"
-    
-    info_text = date_line
-    
-    # --- 3. МЕТЕОДАННЫЕ (Metrics) ---
+    # ---- 1) Метрики ----
     metrics_lines = []
-    
-    # Температура
+
     if tracked_params.get("temperature", False):
         unit = unit_trans.get("temp", {}).get(user.temp_unit, "°C")
         label = labels.get("temperature", "Температура")
-        
+
         val_str = ""
         if "temp_min" in weather_data and "temp_max" in weather_data:
             t_min = round(convert_temperature(weather_data['temp_min'], user.temp_unit))
             t_max = round(convert_temperature(weather_data['temp_max'], user.temp_unit))
-            if t_min == t_max:
-                val_str = f"{t_min}{unit}"
-            else:
-                val_str = f"{t_min}{unit} ~ {t_max}{unit}"
+            val_str = f"{t_min}{unit}" if t_min == t_max else f"{t_min}{unit} ~ {t_max}{unit}"
         elif "temp" in weather_data:
             val = round(convert_temperature(weather_data['temp'], user.temp_unit))
             val_str = f"{val}{unit}"
-            
+
         if val_str:
             metrics_lines.append(f"▸ {label}: {val_str}")
 
-    # Ощущается как
     if tracked_params.get("feels_like", False) and "feels_like" in weather_data:
         val = round(convert_temperature(weather_data['feels_like'], user.temp_unit))
         unit = unit_trans.get("temp", {}).get(user.temp_unit, "°C")
-        label = labels.get("feels_like", "Ощущается")
+        label = labels.get("feels_like", "Ощущается как")
         metrics_lines.append(f"▸ {label}: {val}{unit}")
 
-    # Влажность
     if tracked_params.get("humidity", False) and "humidity" in weather_data:
         label = labels.get("humidity", "Влажность")
         metrics_lines.append(f"▸ {label}: {int(weather_data['humidity'])}%")
 
-    # Осадки
     if tracked_params.get("precipitation", False) and "precipitation" in weather_data:
-        label = labels.get("precipitation", "Осадки")
-        val = weather_data['precipitation']
-        metrics_lines.append(f"▸ {label}: {val}%")
+        label = labels.get("precipitation", "Вероятность осадков")
+        metrics_lines.append(f"▸ {label}: {weather_data['precipitation']}%")
 
-    # Давление
     if tracked_params.get("pressure", False) and "pressure" in weather_data:
         val = round(convert_pressure(weather_data['pressure'], user.pressure_unit))
         unit = unit_trans.get("pressure", {}).get(user.pressure_unit, "mmHg")
         label = labels.get("pressure", "Давление")
         metrics_lines.append(f"▸ {label}: {val} {unit}")
 
-    # Ветер
     wind_unit = unit_trans.get("wind_speed", {}).get(user.wind_speed_unit, "m/s")
     if tracked_params.get("wind_speed", False) and "wind_speed" in weather_data:
         val = round(convert_wind_speed(weather_data['wind_speed'], user.wind_speed_unit), 1)
-        label = labels.get("wind_speed", "Ветер")
+        label = labels.get("wind_speed", "Скорость ветра")
         metrics_lines.append(f"▸ {label}: {val} {wind_unit}")
 
-    # Порывы
     if tracked_params.get("wind_gust", False) and "wind_gust" in weather_data:
         val = round(convert_wind_speed(weather_data['wind_gust'], user.wind_speed_unit), 1)
-        label = labels.get("wind_gust", "Порывы")
+        label = labels.get("wind_gust", "Порывы ветра")
         metrics_lines.append(f"▸ {label}: {val} {wind_unit}")
-        
-    # Направление ветра
-    if tracked_params.get("wind_direction", False) and "wind_direction" in weather_data:
-         label = labels.get("wind_direction", "Направление")
-         metrics_lines.append(f"▸ {label}: {weather_data['wind_direction']}°")
 
-    # Облачность
+    if tracked_params.get("wind_direction", False) and "wind_direction" in weather_data:
+        label = labels.get("wind_direction", "Направление ветра")
+        metrics_lines.append(f"▸ {label}: {weather_data['wind_direction']}°")
+
     if tracked_params.get("clouds", False) and "clouds" in weather_data:
         label = labels.get("clouds", "Облачность")
         metrics_lines.append(f"▸ {label}: {int(weather_data['clouds'])}%")
-        
-    # Видимость
+
     if tracked_params.get("visibility", False) and "visibility" in weather_data:
         label = labels.get("visibility", "Видимость")
         metrics_lines.append(f"▸ {label}: {int(weather_data['visibility'])} м")
 
-    metrics_text = "\n".join(metrics_lines)
+    metrics_text = "\n".join(metrics_lines).strip()
 
-
-    # --- СБОРКА ИТОГОВОГО СООБЩЕНИЯ ---
+    # ---- 2) DAILY: как эталон ----
     if is_daily_forecast:
-        final_message = f"{forecastLable}\n{info_text}"
+        if not title_text:
+            title_text = get_text("daily_forecast_title", lang)
+
+        header_html = f"<blockquote><b>{title_text}</b></blockquote>"
+        final_message = header_html
+
+        if summary_text:
+            final_message += f"\n{summary_text}"
+
+        if metrics_text:
+            final_message += f"\n─────────────────────\n<blockquote expandable>{metrics_text}</blockquote>"
+
+        return final_message
+
+    # ---- 3) НЕ daily: дата/описание + summary сверху + метрики ----
+    tz = ZoneInfo(user.timezone) if user.timezone else ZoneInfo("UTC")
+
+    if 'dt' in weather_data:
+        dt_obj = datetime.fromtimestamp(weather_data['dt'], tz)
+        show_time = True
+    elif 'date' in weather_data and isinstance(weather_data['date'], str) and len(weather_data['date']) == 5:
+        try:
+            d, m = map(int, weather_data['date'].split('.'))
+            now = datetime.now(tz)
+            dt_obj = now.replace(month=m, day=d)
+            show_time = False
+        except Exception:
+            dt_obj = datetime.now(tz)
+            show_time = True
     else:
-        final_message = f"{info_text}"
-    
+        dt_obj = datetime.now(tz)
+        show_time = True
+
+    months_map = get_translation_dict("months", lang)
+    weekdays_map = get_translation_dict("weekdays", lang)
+
+    en_weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    wd_key = en_weekdays[dt_obj.weekday()]
+    wd_str = weekdays_map.get(wd_key, wd_key)
+    month_str = months_map.get(dt_obj.month, dt_obj.strftime("%B"))
+
+    day_num = dt_obj.day
+    time_str = dt_obj.strftime("%H:%M")
+
+    date_line = f"<b>{wd_str}, {day_num} {month_str} {time_str}</b>" if show_time else f"<b>{wd_str}, {day_num} {month_str}</b>"
+
+    # ✅ ВАЖНО: описание (▸ desc) показываем ТОЛЬКО если НЕТ summary_text
+    desc = ""
+    if not summary_text:
+        if "descriptions" in weather_data and isinstance(weather_data["descriptions"], list) and weather_data["descriptions"]:
+            desc = Counter(weather_data["descriptions"]).most_common(1)[0][0].capitalize()
+        elif "description" in weather_data:
+            desc = str(weather_data['description']).capitalize()
+
+    if desc:
+        date_line += f"\n▸ {desc}"
+
+    final_message = date_line
+
+    # summary сверху (и не уходит вниз)
+    if summary_text:
+        final_message += f"\n{summary_text}"
+
     if metrics_text:
         final_message += f"\n─────────────────────\n<blockquote expandable>{metrics_text}</blockquote>"
 
-    if summary_text:
-        final_message += f"\n\n{summary_text}"
-        
     return final_message
+
 
 def get_weekly_forecast_data(city, user):
     """

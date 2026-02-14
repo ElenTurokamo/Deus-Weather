@@ -109,16 +109,14 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 
 #ФУНКЦИИ
+@safe_execute
 @bot.message_handler(func=lambda m: getattr(m, "pinned_message", None) is not None)
 def _delete_pin_service_message(message):
     try:
-        # чистим только в личных чатах
-        if getattr(message.chat, "type", None) != "private":
-            return
         bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
     except Exception as e:
+        # В группах/каналах может не быть прав, либо Telegram не даст удалить сервиску
         bot_logger.debug(f"Не удалось удалить системное сообщение о закреплении: {e}")
-
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith("citypick_")
@@ -166,21 +164,16 @@ def start_city_picker(chat_id: int, lang: str, flow: str):
     """
     Запускает выбор города, удаляя предыдущее сообщение (выбор cязыка).
     """
-    # 1. Удаляем предыдущее сообщение (это было "Выберите язык")
     last_msg_id = get_data_field("last_bot_message", chat_id)
     safe_delete(chat_id, last_msg_id)
 
     update_data_field("citypick_flow", chat_id, flow)
 
-    # Формируем новое сообщение
     text = get_text("citypick_select_country", lang)
-    # Предполагаем, что у тебя есть функция build_country_kb
     kb = build_country_kb(lang, flow=flow) 
 
-    # Отправляем "Выберите страну/город"
     msg = bot.send_message(chat_id, text, reply_markup=kb)
     
-    # ЗАПОМИНАЕМ ID сообщения "Выберите город"
     update_data_field("last_bot_message", chat_id, msg.message_id)
 
 
@@ -199,7 +192,6 @@ def build_country_kb(lang: str, flow: str = "reg") -> types.InlineKeyboardMarkup
         types.InlineKeyboardButton(get_text("citypick_btn_geo", lang), callback_data="citypick_geo"),
     )
 
-    # ✅ Кнопка отмены — только при смене города
     if flow == "chg":
         kb.add(types.InlineKeyboardButton(get_text("btn_cancel", lang), callback_data="cancel_changecity"))
 
@@ -386,7 +378,7 @@ def process_city_manual_input(message):
         msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
         safe_delete(chat_id, msg_id)
         update_data_field("last_user_command", chat_id, None)
-        
+
     if not message.text:
         bot.send_message(chat_id, get_text("error_no_input", lang))
         return
@@ -776,13 +768,11 @@ def cancel_changecity_callback(call):
         bot.delete_message(chat_id, call.message.message_id)
     except Exception as e:
         bot_logger.warning(f"▸ Ошибка при удалении сообщения с кнопкой 'Отмена': {e}")
-    last_command_message = get_data_field("last_user_command", chat_id)
-    if last_command_message:
-        try:
-            bot.delete_message(chat_id, last_command_message)
-            update_data_field("last_user_command", chat_id, None)
-        except Exception as e:
-            bot_logger.warning(f"▸ Ошибка при удалении сообщения команды /changecity: {e}")
+    last_cmd = get_data_field("last_user_command", chat_id)
+    if last_cmd:
+        msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
+        safe_delete(chat_id, msg_id)
+        update_data_field("last_user_command", chat_id, None)
     bot.clear_step_handler_by_chat_id(chat_id)
     update_data_field("citypick_flow", chat_id, None)
     send_settings_menu(chat_id)
@@ -1276,7 +1266,7 @@ def set_language_callback(call):
         try:
             update_existing_forecast(user_id)
         except Exception:
-            update_existing_forecast(user_id)
+            refresh_daily_forecast(user_id)
         pass
 
 @safe_execute
@@ -1472,17 +1462,20 @@ def process_new_city_registration(message):
 @bot.callback_query_handler(func=lambda call: call.data in ("open_settings", "back_to_settings"))
 def open_settings_callback(call):
     chat_id = call.message.chat.id
-
-    # закрываем "часики" сразу
     bot.answer_callback_query(call.id)
 
-    # можно удалить текущее inline-сообщение (не обязательно, но аккуратно)
-    try:
-        bot.delete_message(chat_id, call.message.message_id)
-    except Exception:
-        pass
+    safe_delete(chat_id, call.message.message_id)
+
+    last_cmd = get_data_field("last_user_command", chat_id)
+    if last_cmd:
+        msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
+        safe_delete(chat_id, msg_id)
+        update_data_field("last_user_command", chat_id, None)
+
+    delete_last_menu_message(chat_id)
 
     send_settings_menu(chat_id)
+
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data in ["change_temp_unit", "change_pressure_unit", "change_wind_speed_unit"])

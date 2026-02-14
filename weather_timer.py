@@ -91,7 +91,104 @@ timer_logger.info("✅ Логирование для таймера настро
 
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"), parse_mode="HTML", threaded=False)
 
-def format_forecast_for_timer(day_data, user, title_text, daily_summary):
+def precip_expected_next_3h(forecast_list, user) -> bool:
+    """
+    True  => в ближайшие 3 часа ожидаются осадки (по данным forecast 3h)
+    False => осадков не ожидается
+    """
+    if not forecast_list:
+        return False
+
+    tz = ZoneInfo(user.timezone) if getattr(user, "timezone", None) else ZoneInfo("UTC")
+    now = datetime.now(tz)
+    limit = now + timedelta(hours=3)
+
+    # OpenWeather /forecast даёт шаг 3 часа; обычно достаточно проверить 1 ближайший слот
+    for item in forecast_list:
+        try:
+            dt_obj = datetime.fromtimestamp(item.get("dt", 0), tz)
+        except Exception:
+            continue
+
+        if dt_obj < now:
+            continue
+        if dt_obj > limit:
+            break
+
+        # 1) Явные поля дождя/снега
+        if item.get("rain") or item.get("snow"):
+            return True
+
+        # 2) POP (probability of precipitation) если есть
+        pop = item.get("pop")
+        try:
+            if pop is not None and float(pop) >= 0.2:  # 20% как “ожидается”
+                return True
+        except Exception:
+            pass
+
+        # 3) Иногда осадки можно поймать по weather.main
+        w = (item.get("weather") or [{}])[0]
+        main = str(w.get("main", "")).lower()
+        if main in ("rain", "snow", "thunderstorm", "drizzle"):
+            return True
+
+        # Для 3-часового окна обычно достаточно первого релевантного слота
+        return False
+
+    return False
+
+
+def should_show_daily_summary(day_data, user, lang: str) -> bool:
+    """
+    True  => показываем daily_summary (ожидается непогода)
+    False => показываем info_text (обычный формат)
+    """
+    # База — ваш словарь "bad_weather_descriptions" в texts.py
+    bad_list = get_translation_dict("bad_weather_descriptions", lang) or []
+    bad_set = {str(x).strip().lower() for x in bad_list if x}
+
+    descs = []
+    if isinstance(day_data.get("descriptions"), list) and day_data["descriptions"]:
+        descs = [str(x) for x in day_data["descriptions"] if x]
+    elif day_data.get("description"):
+        descs = [str(day_data["description"])]
+
+    if any(d.strip().lower() in bad_set for d in descs):
+        return True
+
+    # Резервные эвристики (на случай несовпадений по тексту)
+    try:
+        if float(day_data.get("precipitation", 0)) >= 40:
+            return True
+    except Exception:
+        pass
+
+    try:
+        if float(day_data.get("wind_gust", 0)) >= 12:
+            return True
+        if float(day_data.get("wind_speed", 0)) >= 10:
+            return True
+    except Exception:
+        pass
+
+    # severity_map (если он у вас есть) — доп. страховка
+    severity_map = get_translation_dict("severity_map", lang) or {}
+    try:
+        text_blob = " ".join([d.lower() for d in descs])
+        max_sev = 0
+        for key, sev in severity_map.items():
+            if key and str(key).lower() in text_blob:
+                max_sev = max(max_sev, int(sev))
+        if max_sev >= 2:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def format_forecast_for_timer(day_data, user, title_text, daily_summary, forecast_list=None):
     """
     Специальная функция форматирования для ежедневной рассылки.
     Порядок: Title -> Date/Desc -> Разделитель -> Metrics -> Summary (внизу)
@@ -142,9 +239,21 @@ def format_forecast_for_timer(day_data, user, title_text, daily_summary):
     elif "description" in day_data:
         desc = day_data['description'].capitalize()
     
+    no_precip_note = "в ближайшие 3 часа осадков не ожидается"
+    try:
+        t = get_translation_dict("common_phrases", lang) or {}
+        no_precip_note = t.get("no_precip_3h", no_precip_note)
+    except Exception:
+        pass
+
+    has_precip_3h = precip_expected_next_3h(forecast_list, user) if forecast_list else False
+
     info_text = date_line
     if desc:
-        info_text += f"\n▸ {desc}"
+        if not should_show_daily_summary(day_data, user, lang) and not has_precip_3h:
+            info_text += f"\n▸ {desc}, {no_precip_note}."
+        else:
+            info_text += f"\n▸ {desc}"
     
     metrics_lines = []
     
@@ -157,7 +266,7 @@ def format_forecast_for_timer(day_data, user, title_text, daily_summary):
         if t_min == t_max:
             val_str = f"{t_min}{unit}"
         else:
-            val_str = f"{t_min}{unit} ... {t_max}{unit}"
+            val_str = f"{t_min}{unit} ~ {t_max}{unit}"
         metrics_lines.append(f"▸ {label}: {val_str}")
 
     if tracked_params.get("feels_like", False) and "feels_like" in day_data:
@@ -206,13 +315,15 @@ def format_forecast_for_timer(day_data, user, title_text, daily_summary):
 
     metrics_text = "\n".join(metrics_lines)
 
-    final_message = f"{header_html}\n{info_text}"
+    final_message = f"{header_html}"
+
+    if daily_summary and should_show_daily_summary(day_data, user, lang):
+        final_message += f"\n{daily_summary}"
+    else:
+        final_message += f"\n{info_text}"
     
     if metrics_text:
         final_message += f"\n─────────────────────\n<blockquote expandable>{metrics_text}</blockquote>"
-
-    if daily_summary:
-        final_message += f"\n{daily_summary}"
         
     return final_message
 
@@ -537,7 +648,6 @@ def should_run_check():
     old_start_time = current_half_hour.timestamp()
     return True, 0
 
-@safe_execute
 def send_daily_forecast(test_time=None):
     all_users = get_all_users()
     if TEST:
@@ -547,52 +657,80 @@ def send_daily_forecast(test_time=None):
 
     for user in users:
         settings = decode_notification_settings(user.notifications_settings)
-        if not settings.get("forecast_notifications", False): continue
-        
+        if not settings.get("forecast_notifications", False):
+            continue
+
         lang = get_user_lang(user)
         user_tz = ZoneInfo(user.timezone or "Asia/Almaty")
         user_time = test_time.astimezone(user_tz) if test_time else datetime.now(user_tz)
 
-        if TEST or (user_time.hour == 6 and user_time.minute < 30):
-            raw_forecast = get_today_forecast(user.preferred_city, user)
-            if not raw_forecast: continue
+        # Запуск в 06:00–06:29 по локальному времени пользователя (или всегда в TEST)
+        if not (TEST or (user_time.hour == 6 and user_time.minute < 30)):
+            continue
 
-            title = get_text("daily_forecast_title", lang)
-            daily_summary = get_weather_summary_description(fetch_today_forecast(user.preferred_city, lang=lang), user)
-            
-            # Формируем текст
-            forecast_message = format_forecast_for_timer(raw_forecast, user, title, daily_summary)
+        raw_forecast = get_today_forecast(user.preferred_city, user)
+        if not raw_forecast:
+            continue
 
-            # Удаляем старое сообщение с прогнозом (если было)
-            last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
-            if last_forecast_id:
-                try: bot.delete_message(chat_id=user.user_id, message_id=last_forecast_id)
-                except: pass
-            
+        title = get_text("daily_forecast_title", lang)
+        daily_summary = get_weather_summary_description(
+            fetch_today_forecast(user.preferred_city, lang=lang),
+            user
+        )
+
+        forecast_message = format_forecast(
+            raw_forecast,
+            user,
+            title,
+            summary_text=daily_summary,
+            is_daily_forecast=True
+        )
+
+        last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
+
+        # 1) Пытаемся обновить существующий закреп
+        if last_forecast_id:
             try:
-                # 1. Отправляем прогноз
-                sent_message = bot.send_message(user.user_id, forecast_message, parse_mode="HTML")
-                update_data_field("last_daily_forecast", user.user_id, sent_message.message_id)
-                
-                # 2. Закрепляем (по желанию, try-except чтобы не падало если нет прав)
-                try: bot.pin_chat_message(chat_id=user.user_id, message_id=sent_message.message_id, disable_notification=True)
-                except: pass
-
-                # 3. --- ИСПРАВЛЕНИЕ: ПЕРЕОТПРАВКА МЕНЮ ---
-                # Удаляем старое меню, чтобы оно не висело выше
-                last_menu_id = get_data_field("last_menu_message", user.user_id)
-                if last_menu_id:
-                    try: bot.delete_message(chat_id=user.user_id, message_id=last_menu_id)
-                    except: pass
-                
-                # Отправляем новое меню (оно запишется в базу внутри функции send_main_menu)
-                send_main_menu(user.user_id)
-
+                bot.edit_message_text(
+                    text=forecast_message,
+                    chat_id=user.user_id,
+                    message_id=last_forecast_id,
+                    parse_mode="HTML"
+                )
+                # Не закрепляем заново — меньше системных сообщений
+                continue
             except Exception as e:
-                timer_logger.error(f"Error sending forecast: {e}")
+                timer_logger.warning(f"Daily edit failed for {user.user_id}: {e}")
+
+        # 2) Если сообщения нет / edit не удался — создаём новое и закрепляем
+        try:
+            sent_message = bot.send_message(user.user_id, forecast_message, parse_mode="HTML")
+            update_data_field("last_daily_forecast", user.user_id, sent_message.message_id)
+
+            try:
+                bot.pin_chat_message(
+                    chat_id=user.user_id,
+                    message_id=sent_message.message_id,
+                    disable_notification=True
+                )
+            except Exception as pin_error:
+                timer_logger.warning(f"Pin failed for {user.user_id}: {pin_error}")
+
+            # Меню — по желанию (как у вас было)
+            last_menu_id = get_data_field("last_menu_message", user.user_id)
+            if last_menu_id:
+                try:
+                    bot.delete_message(chat_id=user.user_id, message_id=last_menu_id)
+                except Exception:
+                    pass
+
+            send_main_menu(user.user_id)
+
+        except Exception as e:
+            timer_logger.error(f"Error sending daily forecast to {user.user_id}: {e}")
+
 
 def update_daily_forecasts():
-    # ... (код фильтрации users тот же) ...
     all_users = get_all_users()
     if TEST:
         users = [u for u in all_users if u.user_id == ADMIN_ID]
@@ -601,22 +739,56 @@ def update_daily_forecasts():
 
     for user in users:
         last_forecast_id = get_data_field("last_daily_forecast", user.user_id)
-        if not last_forecast_id: continue
+        if not last_forecast_id:
+            continue
 
         lang = get_user_lang(user)
+
         raw_forecast = get_today_forecast(user.preferred_city, user)
-        if not raw_forecast: continue
+        if not raw_forecast:
+            continue
 
         title = get_text("daily_forecast_title", lang)
-        daily_summary = get_weather_summary_description(fetch_today_forecast(user.preferred_city, lang=lang), user)
-        
-        # Используем новую функцию
-        forecast_message = format_forecast_for_timer(raw_forecast, user, title, daily_summary)
-        
+        daily_summary = get_weather_summary_description(
+            fetch_today_forecast(user.preferred_city, lang=lang),
+            user
+        )
+
+        forecast_message = format_forecast(
+            raw_forecast,
+            user,
+            title,
+            summary_text=daily_summary,
+            is_daily_forecast=True
+        )
+
         try:
-            bot.edit_message_text(forecast_message, chat_id=user.user_id, message_id=last_forecast_id, parse_mode="HTML")
-            # При обновлении сообщения меню переотправлять не обязательно, так как сообщение остается на месте
-        except: pass
+            bot.edit_message_text(
+                text=forecast_message,
+                chat_id=user.user_id,
+                message_id=last_forecast_id,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            # ✅ ВАЖНО: если сообщение удалили при очистке чата — восстанавливаем
+            timer_logger.warning(f"Daily update edit failed for {user.user_id}: {e}")
+
+            try:
+                sent_message = bot.send_message(user.user_id, forecast_message, parse_mode="HTML")
+                update_data_field("last_daily_forecast", user.user_id, sent_message.message_id)
+
+                try:
+                    bot.pin_chat_message(
+                        chat_id=user.user_id,
+                        message_id=sent_message.message_id,
+                        disable_notification=True
+                    )
+                except Exception as pin_error:
+                    timer_logger.warning(f"Pin failed (recreate) for {user.user_id}: {pin_error}")
+
+            except Exception as send_error:
+                timer_logger.error(f"Daily recreate failed for {user.user_id}: {send_error}")
+
 
 if __name__ == '__main__':
     while True:
