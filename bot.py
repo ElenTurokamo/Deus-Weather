@@ -279,6 +279,11 @@ def citypick_city(call):
         try:
             echo_msg = bot.send_message(chat_id, city_name)
             bot.delete_message(chat_id, echo_msg.message_id)
+            last_cmd = get_data_field("last_user_command", chat_id)
+            if last_cmd:
+                msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
+                safe_delete(chat_id, msg_id)
+                update_data_field("last_user_command", chat_id, None)
         except Exception:
             pass
 
@@ -376,6 +381,12 @@ def process_city_manual_input(message):
     user = get_user(user_id)
     lang = get_user_lang(user) if user else "ru"
 
+    last_cmd = get_data_field("last_user_command", chat_id)
+    if last_cmd:
+        msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
+        safe_delete(chat_id, msg_id)
+        update_data_field("last_user_command", chat_id, None)
+        
     if not message.text:
         bot.send_message(chat_id, get_text("error_no_input", lang))
         return
@@ -621,33 +632,42 @@ def back_to_settings_callback(call):
 
 
 @safe_execute
-@bot.message_handler(func=lambda message: message.text == "⚙️ Настройки")
+@bot.message_handler(func=lambda message: message.text in [
+    get_text("menu_settings", "ru"),
+    get_text("menu_settings", "en"),
+    get_text("menu_settings", "kk")
+])
 def settings_menu_handler(message):
-    """Обработчик вызова меню настроек через сообщение."""
+    """Открывает меню настроек и сохраняет ID сообщения, которым оно было вызвано."""
     chat_id = message.chat.id
+
     update_data_field("last_settings_command", chat_id, message.message_id)
-    bot_logger.debug(f"Сохранён ID команды 'Настройки': {message.message_id} для чата {chat_id}")
+    bot_logger.debug(f"Сохранён ID команды 'Settings': {message.message_id} для чата {chat_id}")
+
     delete_last_menu_message(chat_id)
     send_settings_menu(chat_id)
-
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
 def back_to_main_callback(call):
-    """Обработчик возврата в главное меню"""
+    """Возврат в главное меню: чистим меню-сообщение и команды, которые открывали настройки/подменю."""
     chat_id = call.message.chat.id
-    try:
-        bot.delete_message(chat_id, call.message.message_id)
-    except Exception as e:
-        bot_logger.warning(f"Ошибка при удалении сообщения с кнопкой 'Назад': {e}")
-    last_command_message = get_data_field("last_user_command", chat_id)
-    if last_command_message:
-        try:
-            bot.delete_message(chat_id, last_command_message)
-            update_data_field("last_user_command", chat_id, None)
-        except Exception as e:
-            bot_logger.warning(f"Ошибка при удалении сообщения команды: {e}")
+
+    safe_delete(chat_id, call.message.message_id)
+
+    last_cmd = get_data_field("last_user_command", chat_id)
+    if last_cmd:
+        msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
+        safe_delete(chat_id, msg_id)
+        update_data_field("last_user_command", chat_id, None)
+
+    last_settings_cmd = get_data_field("last_settings_command", chat_id)
+    if last_settings_cmd:
+        safe_delete(chat_id, last_settings_cmd)
+        update_data_field("last_settings_command", chat_id, None)
+
     delete_last_menu_message(chat_id)
+
     send_main_menu(chat_id)
 
 
@@ -736,9 +756,15 @@ def cmd_changecity(message):
     user = require_registered_user(user_id, chat_id, "ru")
     if not user:
         return
-    lang = get_user_lang(user)
-    start_city_picker(chat_id, lang, flow="chg")
 
+    lang = get_user_lang(user)
+
+    update_data_field("last_user_command", chat_id, {
+        "message_id": message.message_id,
+        "command": message.text
+    })
+
+    start_city_picker(chat_id, lang, flow="chg")
 
 @safe_execute
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_changecity")
@@ -1549,7 +1575,7 @@ def clear_old_updates():
 
 @safe_execute
 def settings_back_to_main_menu(message):
-    """Кнопка 'Назад/Выход' из настроек -> главное меню + удалить сообщение пользователя сразу."""
+    """Кнопка 'Назад' (reply keyboard) из настроек -> главное меню, с очисткой команд."""
     chat_id = message.chat.id
     user_id = message.from_user.id
 
@@ -1557,18 +1583,21 @@ def settings_back_to_main_menu(message):
     if not user:
         return
 
-    # ✅ удалить сообщение пользователя с нажатием кнопки
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception:
-        pass
+    safe_delete(chat_id, message.message_id)
 
-    # удалить декоративное меню настроек
+    last_settings_cmd = get_data_field("last_settings_command", chat_id)
+    if last_settings_cmd:
+        safe_delete(chat_id, last_settings_cmd)
+        update_data_field("last_settings_command", chat_id, None)
+
+    last_cmd = get_data_field("last_user_command", chat_id)
+    if last_cmd:
+        msg_id = last_cmd.get("message_id") if isinstance(last_cmd, dict) else last_cmd
+        safe_delete(chat_id, msg_id)
+        update_data_field("last_user_command", chat_id, None)
+
     delete_last_menu_message(chat_id)
-
-    # вернуть главное меню
     send_main_menu(chat_id)
-
 
 @safe_execute
 def weather_data_settings(message):
@@ -1599,7 +1628,7 @@ def get_menu_actions(lang="ru"):
     return {
         get_text("menu_weather_now", lang): handle_weather_command,
         get_text("menu_forecast", lang): forecast_menu_handler,
-        get_text("menu_settings", lang): lambda msg: send_settings_menu(msg.chat.id),
+        get_text("menu_settings", lang): settings_menu_handler,
         get_text("menu_change_city", lang): cmd_changecity,
         get_text("menu_notifications", lang): notification_settings,
         get_text("menu_back", lang): settings_back_to_main_menu,
